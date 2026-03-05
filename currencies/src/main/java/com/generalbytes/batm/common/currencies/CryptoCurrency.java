@@ -128,6 +128,7 @@ public enum CryptoCurrency {
     MUE("MonetaryUnit"),
     XPM("Primecoin"),
     ZPAE("ZelaaPayAE"),
+    RYO("RYO Coin"),
 
     TBCH("test BCH"),
     TBTC("test BTC"),
