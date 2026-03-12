@@ -2508,4 +2508,39 @@
         <cryptologo cryptocurrency="USDCSOL" file="usdcsol.png"/>
         <cryptologo cryptocurrency="USDCSOL" file="usdcsol.svg"/>
     </extension>
+      <extension class="com.generalbytes.batm.server.extensions.extra.ryocoin.RYOExtension" >
+        <wallet prefix="ryoapi" name="RYO">
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+        </wallet>
+        <ratesource prefix="coinhubratesource" name ="CoinHub Co., Ltd Rate Source" >
+            <param name="price" />
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+            <help>USD is default fiat currency.</help>
+        </ratesource>
+        <exchange prefix="coinhubeokjp" name="CoinHubEOKJP">
+            <param name="key"/>
+            <param name="privatekey"/>
+            <param name="fiatcurrency"/>
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+        </exchange>
+        <!-- <cryptologo cryptocurrency="RYO" file="ryo.png"/> -->
+        <cryptologo cryptocurrency="SHIB" file="shib.svg"/>
+        <cryptologo cryptocurrency="SHIB" file="shib.png"/>
+        <cryptologo cryptocurrency="BTC" file="btc.svg"/>
+        <cryptologo cryptocurrency="BTC" file="btc.png"/>
+        <cryptologo cryptocurrency="ETC" file="etc.svg"/>
+        <cryptologo cryptocurrency="ETC" file="etc.png"/>
+        <cryptologo cryptocurrency="DOGE" file="doge.svg"/>
+        <cryptologo cryptocurrency="DOGE" file="doge.png"/>
+
+    </extension>
 </extensions>

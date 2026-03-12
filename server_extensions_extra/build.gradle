@@ -37,6 +37,9 @@ dependencies {
     implementation project(":server_extensions_api")
     implementation project(":currencies")
 
+    // Resolve "class file for kotlin.DeprecationLevel not found" when compiling against Kotlin-annotated deps (e.g. XChange, OkHttp)
+    compileOnly("org.jetbrains.kotlin:kotlin-stdlib:1.9.22")
+
     implementation("com.github.Polve:JavaBitcoindRpcClient:$javaBitcoindRpcVersion")
     implementation("org.slf4j:slf4j-api:1.7.36")
     implementation("com.github.mmazi:rescu:3.1")
