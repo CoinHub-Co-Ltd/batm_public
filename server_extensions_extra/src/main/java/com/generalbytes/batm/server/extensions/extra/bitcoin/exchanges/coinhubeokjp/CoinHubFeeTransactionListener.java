@@ -32,7 +32,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -325,6 +327,7 @@ public class CoinHubFeeTransactionListener implements ITransactionListener {
         }
         if (transactionDetails.getExpectedProfit() != null) {
             request.expected_profit = transactionDetails.getExpectedProfit().toPlainString();
+            request.profit_percent = request.expected_profit;
         }
         if (transactionDetails.getDiscountCode() != null) {
             request.discount_code = transactionDetails.getDiscountCode();
@@ -340,10 +343,79 @@ public class CoinHubFeeTransactionListener implements ITransactionListener {
         if (transactionDetails.getTerminalTime() != null) {
             request.terminal_time = String.valueOf(transactionDetails.getTerminalTime().getTime());
         }
-        
-        log.info("[SEIKI] Built transaction request: orderId={}, instrumentId={}, cashAmount={}, cryptoAmount={}, fixedFee={}, feeDiscount={}, expectedProfit={}, eventType={}", 
-            request.order_id, request.instrument_id, request.cash_amount, request.crypto_amount, request.fixed_fee, request.fee_discount, request.expected_profit, eventType);
+
+        populateDerivedPricing(request, transactionDetails);
+        populateConfiguredProfitPercents(request, transactionDetails);
+
+        log.info("[SEIKI] Built transaction request: orderId={}, instrumentId={}, cashAmount={}, cryptoAmount={}, fixedFee={}, feeDiscount={}, expectedProfit={}, rateSource={}, effectiveRate={}, eventType={}",
+            request.order_id, request.instrument_id, request.cash_amount, request.crypto_amount, request.fixed_fee, request.fee_discount, request.expected_profit, request.rate_source_price, request.customer_effective_rate, eventType);
         
         return request;
     }
-} 
+
+    /**
+     * Derives fee % of cash, customer fiat-per-crypto rate, markup vs {@link ITransactionDetails#getRateSourcePrice()},
+     * and approximate fiat profit vs rate source for buy transactions.
+     */
+    private void populateDerivedPricing(TransactionDetailsRequest request, ITransactionDetails td) {
+        BigDecimal cash = td.getCashAmount();
+        BigDecimal crypto = td.getCryptoAmount();
+        BigDecimal rateSource = td.getRateSourcePrice();
+        BigDecimal fiatFee = td.getFixedTransactionFee();
+
+        if (cash != null && cash.compareTo(BigDecimal.ZERO) > 0 && fiatFee != null && fiatFee.compareTo(BigDecimal.ZERO) >= 0) {
+            request.fixed_fee_percent_of_cash = fiatFee
+                .multiply(new BigDecimal("100"))
+                .divide(cash, 8, RoundingMode.HALF_UP)
+                .toPlainString();
+        }
+
+        if (cash != null && crypto != null && crypto.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal effective = cash.divide(crypto, 16, RoundingMode.HALF_UP);
+            request.customer_effective_rate = effective.toPlainString();
+
+            if (rateSource != null && rateSource.compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal markupPct = effective
+                    .divide(rateSource, 16, RoundingMode.HALF_UP)
+                    .subtract(BigDecimal.ONE)
+                    .multiply(new BigDecimal("100"));
+                request.markup_percent_vs_rate_source = markupPct.toPlainString();
+            }
+        }
+
+        if (td.getType() == ITransactionDetails.TYPE_BUY_CRYPTO
+            && cash != null && crypto != null && rateSource != null
+            && cash.compareTo(BigDecimal.ZERO) > 0 && crypto.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal fiatAtSource = crypto.multiply(rateSource);
+            request.estimated_profit_fiat = cash.subtract(fiatAtSource).setScale(8, RoundingMode.HALF_UP).toPlainString();
+        }
+    }
+
+    private void populateConfiguredProfitPercents(TransactionDetailsRequest request, ITransactionDetails td) {
+        if (ctx == null) {
+            return;
+        }
+        String serial = td.getTerminalSerialNumber();
+        String coin = td.getCryptoCurrency();
+        if (serial == null || coin == null) {
+            return;
+        }
+        try {
+            List<ICryptoConfiguration> configs = ctx.findCryptoConfigurationsByTerminalSerialNumbers(
+                Collections.singletonList(serial));
+            for (ICryptoConfiguration c : configs) {
+                if (coin.equals(c.getCryptoCurrency())) {
+                    if (c.getProfitBuy() != null) {
+                        request.configured_profit_buy_percent = c.getProfitBuy().toPlainString();
+                    }
+                    if (c.getProfitSell() != null) {
+                        request.configured_profit_sell_percent = c.getProfitSell().toPlainString();
+                    }
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[SEIKI] Could not resolve ICryptoConfiguration for terminal {} coin {}", serial, coin, e);
+        }
+    }
+}
