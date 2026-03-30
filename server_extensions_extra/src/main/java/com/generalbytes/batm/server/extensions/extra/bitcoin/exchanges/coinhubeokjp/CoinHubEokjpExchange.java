@@ -321,7 +321,7 @@ public class CoinHubEokjpExchange implements IExchangeAdvanced, IRateSourceAdvan
 
             WithdrawalRequest request = new WithdrawalRequest();
             request.currency = cryptoCurrency;
-            request.amount = amount.divide(BigDecimal.ONE.add(profit), RoundingMode.HALF_UP);
+            request.amount = amount; //amount.divide(BigDecimal.ONE.add(profit), RoundingMode.HALF_UP);
             request.destination = "1";
             request.usage_agreement = "1";
             request.to_address = destinationAddress;
@@ -419,7 +419,7 @@ public class CoinHubEokjpExchange implements IExchangeAdvanced, IRateSourceAdvan
 
         BigDecimal notional;
     
-        notional = cryptoAmount.divide(BigDecimal.ONE.add(profit), RoundingMode.HALF_UP);
+        notional = cryptoAmount; //cryptoAmount.divide(BigDecimal.ONE.add(profit), RoundingMode.HALF_UP);
         log.info("Using crypto-based notional: {} {}", notional, cryptoCurrency);
         
         String order_type = "3";
