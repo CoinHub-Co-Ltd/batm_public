@@ -1,0 +1,10 @@
+Your cashback is ready.
+
+Terminal: {terminal}
+Amount: {amount} {currency}
+Please use the QR at the terminal within about {validity_minutes} minutes.
+
+The attached image (cashback-qr.png) is your redeem QR code.
+
+Reference string:
+{qr_payload}

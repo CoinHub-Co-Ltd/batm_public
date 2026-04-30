@@ -88,6 +88,17 @@ public class Tester {
         System.out.println("   get-ebalance");
         System.out.println("     Instantiates a exchange and retrieves current balance.");
         System.out.println();
+        System.out.println("   get-deposit-address");
+        System.out.println("     Instantiates a exchange and retrieves deposit address.");
+        System.out.println();
+        System.out.println("   withdraw");
+        System.out.println("     Performs exchange withdraw via sendCoins (CoinHubJP uses withdraw API).");
+        System.out.println("     Uses hardcoded payload: crypto=BTC amount=0.00079204 recipient=1GBQeNLARCFHe222KmrS9GiWARbKzKVNU3");
+        System.out.println();
+        System.out.println("   place-order-task");
+        System.out.println("     Places an order using IExchangeAdvanced task flow (hits \"task createOrder\").");
+        System.out.println("     Uses hardcoded payload: crypto=BTC fiat=USDT amount=1 (instrument_id becomes BTC-USDT).");
+        System.out.println();
 
     }
 
@@ -181,6 +192,48 @@ public class Tester {
             final String name = (String) options.valueOf("n");
             final String params = (String) options.valueOf("p");
             getExchangeBalance(name, params);
+        } else if ("get-deposit-address".equalsIgnoreCase(action)) {
+            if (!options.hasArgument("n")) {
+                System.err.println("Error: Missing -n parameter.");
+                usage();
+                System.exit(1);
+            }
+            if (!options.hasArgument("p")) {
+                System.err.println("Error: Missing -p parameter.");
+                usage();
+                System.exit(1);
+            }
+            final String name = (String) options.valueOf("n");
+            final String params = (String) options.valueOf("p");
+            getDepositAddress(name, params);
+        } else if ("withdraw".equalsIgnoreCase(action)) {
+            if (!options.hasArgument("n")) {
+                System.err.println("Error: Missing -n parameter.");
+                usage();
+                System.exit(1);
+            }
+            if (!options.hasArgument("p")) {
+                System.err.println("Error: Missing -p parameter.");
+                usage();
+                System.exit(1);
+            }
+            final String name = (String) options.valueOf("n");
+            final String params = (String) options.valueOf("p");
+            withdraw(name, params);
+        } else if ("place-order-task".equalsIgnoreCase(action)) {
+            if (!options.hasArgument("n")) {
+                System.err.println("Error: Missing -n parameter.");
+                usage();
+                System.exit(1);
+            }
+            if (!options.hasArgument("p")) {
+                System.err.println("Error: Missing -p parameter.");
+                usage();
+                System.exit(1);
+            }
+            final String name = (String) options.valueOf("n");
+            final String params = (String) options.valueOf("p");
+            placeOrderTask(name, params);
         }else{
             System.err.println("Error: Unknown Action.");
             usage();
@@ -505,11 +558,111 @@ public class Tester {
 				}else{
 					System.err.println("Exchange returned NULL.");
 				}
-				final String depositAddress = e.getDepositAddress(selectedCryptoCurrency);
-				System.out.println("Deposit Address: " + depositAddress);
 				return;
 			}
 		}
+        System.err.println("Error: Exchange not found.");
+    }
+
+    private void getDepositAddress(String name, String params) {
+        for (int i = 0; i < extensions.size(); i++) {
+            IExtension extension = extensions.get(i);
+            final IExchange e = extension.createExchange(name + ":" + params);
+            if (e != null) {
+                final Set<String> cryptoCurrencies = e.getCryptoCurrencies();
+                String selectedCryptoCurrency = null;
+                for (String cryptoCurrency : cryptoCurrencies) {
+                    if (selectedCryptoCurrency == null) {
+                        selectedCryptoCurrency = cryptoCurrency;
+                    }
+                }
+
+                if (selectedCryptoCurrency == null) {
+                    System.err.println("Error: Exchange returned no crypto currencies.");
+                    return;
+                }
+
+                final String depositAddress = e.getDepositAddress(selectedCryptoCurrency);
+                System.out.println("Crypto Currency: " + selectedCryptoCurrency);
+                System.out.println("Deposit Address: " + depositAddress);
+                System.out.println("Note: If the exchange API returns memo/tag, this tester currently prints only the plain address (IExchange returns String).");
+                return;
+            }
+        }
+        System.err.println("Error: Exchange not found.");
+    }
+
+    private void withdraw(String name, String params) {
+        final String crypto = "BTC";
+        final BigDecimal amount = new BigDecimal("0.00079204");
+        final String recipient = "1GBQeNLARCFHe222KmrS9GiWARbKzKVNU3";
+
+        for (int i = 0; i < extensions.size(); i++) {
+            IExtension extension = extensions.get(i);
+            final IExchange e = extension.createExchange(name + ":" + params);
+            if (e != null) {
+                if (!(e instanceof IWallet)) {
+                    System.err.println("Error: Exchange does not implement IWallet; cannot call sendCoins().");
+                    return;
+                }
+
+                System.out.println("Withdrawing payload:");
+                System.out.println("  crypto=" + crypto);
+                System.out.println("  amount=" + amount.toPlainString());
+                System.out.println("  recipient=" + recipient);
+
+                String result = ((IWallet) e).sendCoins(recipient, amount, crypto, "tester-withdraw");
+                System.out.println("Withdraw result: " + result);
+                return;
+            }
+        }
+        System.err.println("Error: Exchange not found.");
+    }
+
+    private void placeOrderTask(String name, String params) {
+        final String crypto = "BTC";
+        final String fiat = "USDT";
+        // API enforces minimum transaction volume (>= 1).
+        final BigDecimal amount = new BigDecimal("1");
+        final String description = "tester-place-order-task";
+
+        for (int i = 0; i < extensions.size(); i++) {
+            IExtension extension = extensions.get(i);
+            final IExchange e = extension.createExchange(name + ":" + params);
+            if (e != null) {
+                if (!(e instanceof IExchangeAdvanced)) {
+                    System.err.println("Error: Exchange does not implement IExchangeAdvanced; cannot create order task.");
+                    return;
+                }
+
+                IExchangeAdvanced adv = (IExchangeAdvanced) e;
+                ITask task = adv.createPurchaseCoinsTask(amount, crypto, fiat, description);
+                if (task == null) {
+                    System.err.println("Error: createPurchaseCoinsTask returned null.");
+                    return;
+                }
+
+                System.out.println("Creating order task payload:");
+                System.out.println("  crypto=" + crypto);
+                System.out.println("  fiat=" + fiat);
+                System.out.println("  amount=" + amount.toPlainString());
+                System.out.println("  description=" + description);
+                System.out.println("  (instrument_id derived by exchange, typically like BTC-USDT)");
+
+                boolean created = task.onCreate();
+                System.out.println("Task onCreate(): " + created);
+
+                task.onDoStep();
+                System.out.println("Task isFinished(): " + task.isFinished());
+                System.out.println("Task isFailed(): " + task.isFailed());
+                System.out.println("Task result: " + task.getResult());
+
+                if (task.isFinished()) {
+                    task.onFinish();
+                }
+                return;
+            }
+        }
         System.err.println("Error: Exchange not found.");
     }
 
