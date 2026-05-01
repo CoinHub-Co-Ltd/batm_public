@@ -21,7 +21,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.generalbytes.batm.server.extensions.IExtensionContext;
 import com.generalbytes.batm.server.extensions.IBanknoteCounts;
-import com.generalbytes.batm.server.extensions.ILocation;
 import com.generalbytes.batm.server.extensions.IRestService;
 import com.generalbytes.batm.server.extensions.ITerminal;
 import com.generalbytes.batm.server.extensions.ITransactionCashbackInfo;
@@ -44,9 +43,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -55,8 +55,10 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.regex.Pattern;
 
 import javax.imageio.ImageIO;
@@ -86,12 +88,15 @@ import javax.ws.rs.core.UriInfo;
  * CAS must have SMTP configured. If {@code cashback_mail_from} is unset, cashback still succeeds but no email is sent.
  * </p>
  * <p>
- * <strong>Translating the email:</strong> add plain-text files under {@code mail_contents/} in the CAS config
+ * <strong>Translating the email:</strong> add template files under {@code mail_contents/} in the CAS config
  * directory (typically {@code /batm/config/mail_contents/}). Body:
- * {@code mail_contents/coinhub_cashback_email_&lt;lang&gt;.txt} (e.g. {@code coinhub_cashback_email_ja.txt} in that folder).
+ * {@code mail_contents/coinhub_cashback_email_&lt;lang&gt;.html} (HTML, preferred) or
+ * {@code mail_contents/coinhub_cashback_email_&lt;lang&gt;.txt} (plain-text fallback).
  * Subject: {@code coinhub_cashback_subject_&lt;lang&gt;.txt} (single line; line breaks are flattened).
  * Pass {@code language} on the cashback request (e.g. {@code ja} or {@code ja-JP}). Placeholders:
- * {@code {terminal}}, {@code {amount}}, {@code {currency}}, {@code {validity_minutes}}, {@code {qr_payload}}.
+ * {@code {terminal}}, {@code {amount}}, {@code {currency}}, {@code {validity_minutes}}, {@code {qr_payload}},
+ * {@code {transaction_id}}, {@code {time}}, {@code {logo}} (text), plus for HTML
+ * {@code {logo_html}} and {@code {logo_url}}. Configure {@code coinhub.cashback_logo_url} for the logo image URL.
  * Lookup order: requested tag, then primary subtag (e.g. {@code ja-JP} → {@code ja}). {@code en.txt} is tried only
  * when the language is English ({@code en}, {@code en-GB}, …), so {@code language=ja} does not pick up
  * {@code coinhub_cashback_email_en.txt} if Japanese files are missing. If no file matches, built-in English defaults.
@@ -362,7 +367,8 @@ public class CoinHubRestService implements IRestService {
     }
 
     /**
-     * Returns information about an ATM (terminal) including cash boxes/cassettes and banknote counts.
+     * Returns cassette summaries (per {@code dispenser_cassette_*}: {@code denomination}, {@code total_remaining_count},
+     * {@code total_remaining_amount}) and acceptor {@code cashbox_summary} with fixed JPY slots ¥1000 / ¥5000 / ¥10,000.
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/atm?serial_number=BT401469}
@@ -399,28 +405,17 @@ public class CoinHubRestService implements IRestService {
                 return body;
             }
 
-            body.put("ok", true);
-            body.put("serial_number", sn);
-            body.put("terminal", terminalToMap(terminal));
-
             List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
-            body.put("cash_boxes", banknoteCountsToList(cashBoxes));
             List<IBanknoteCounts> cassettes = filterByCashboxNamePrefix(cashBoxes, "dispenser_cassette_");
-            List<IBanknoteCounts> acceptorCashbox = filterByCashboxNameExact(cashBoxes, IBanknoteCounts.CN_ACCEPTOR_CASHBOX);
-            List<IBanknoteCounts> reject = filterByCashboxNameExact(cashBoxes, IBanknoteCounts.CN_DISPENSER_REJECT);
-            List<IBanknoteCounts> recycler = filterByCashboxNamePrefix(cashBoxes, "recycler_");
+            List<IBanknoteCounts> acceptorCashbox = filterAcceptorCashboxRows(cashBoxes);
 
-            body.put("cassettes", banknoteCountsToList(cassettes));
-            body.put("cashboxes", banknoteCountsToList(acceptorCashbox));
-            body.put("reject", banknoteCountsToList(reject));
-            body.put("recycler", banknoteCountsToList(recycler));
-
-            body.put("cassette_summary", summarizeByCashboxName(cassettes));
-            body.put("cashbox_summary", summarizeByCashboxName(acceptorCashbox));
-            body.put("reject_summary", summarizeByCashboxName(reject));
-            body.put("recycler_summary", summarizeByCashboxName(recycler));
-
-            body.put("banknotes", aggregateBanknotesByCurrencyAndDenomination(cashBoxes));
+            body.put("cassette_summary", summarizeCassetteBoxes(cassettes));
+            TreeSet<BigDecimal> fallbackDenoms = collectJpyDenominationsSorted(cassettes);
+            List<Map<String, Object>> cashboxSummary = summarizeAcceptorCashboxJpyFlat(acceptorCashbox, fallbackDenoms);
+            if (cashboxSummary.isEmpty()) {
+                cashboxSummary = Collections.singletonList(emptyAcceptorCashboxSummary(fallbackDenoms));
+            }
+            body.put("cashbox_summary", cashboxSummary);
         } catch (IllegalArgumentException e) {
             body.put("ok", false);
             body.put("error", "invalid_parameters");
@@ -435,118 +430,324 @@ public class CoinHubRestService implements IRestService {
         return body;
     }
 
-    private static Map<String, Object> terminalToMap(ITerminal t) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        if (t == null) {
-            return m;
+    /**
+     * Returns cassette + acceptor cashbox summaries for all terminals.
+     *
+     * <p>Example:</p>
+     * {@code GET /extensions/coinhub/atm/all}
+     */
+    @GET
+    @Path("/atm/all")
+    public Map<String, Object> getAtmInfoAll() {
+        Map<String, Object> body = new LinkedHashMap<>();
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            body.put("ok", false);
+            body.put("error", "extension_context_unavailable");
+            return body;
         }
-        m.put("type", t.getType());
-        m.put("serial_number", t.getSerialNumber());
-        m.put("name", t.getName());
-        m.put("active", t.isActive());
-        m.put("locked", t.isLocked());
-        m.put("deleted", t.isDeleted());
-        m.put("organization_id", t.getOrganizationId());
-        m.put("connected_at", t.getConnectedAt());
-        m.put("last_ping_at", t.getLastPingAt());
-        m.put("last_ping_duration_ms", t.getLastPingDuration());
-        m.put("exchange_rate_updated_at", t.getExchangeRateUpdatedAt());
-        m.put("exchange_rates_buy", t.getExchangeRatesBuy());
-        m.put("exchange_rates_sell", t.getExchangeRatesSell());
-        m.put("errors", t.getErrors());
-        m.put("operational_mode", t.getOperationalMode());
-        m.put("rejected_reason", t.getRejectedReason());
-        m.put("allowed_cash_currencies", safeList(t.getAllowedCashCurrencies()));
-        m.put("allowed_crypto_currencies", safeList(t.getAllowedCryptoCurrencies()));
-        m.put("tags", t.getTags() != null ? new ArrayList<>(t.getTags()) : Collections.emptyList());
-        m.put("location", locationToMap(t.getLocation()));
-        return m;
+
+        List<ITerminal> terminals = safeList(ctx.findAllTerminals());
+        List<Map<String, Object>> out = new ArrayList<>();
+
+        for (ITerminal t : terminals) {
+            if (t == null) {
+                continue;
+            }
+            String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
+            if (sn.isEmpty()) {
+                continue;
+            }
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("serial_number", sn);
+            row.put("terminal_name", t.getName());
+            row.put("terminal_active", t.isActive());
+            row.put("terminal_locked", t.isLocked());
+            row.put("terminal_deleted", t.isDeleted());
+
+            try {
+                List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
+                List<IBanknoteCounts> cassettes = filterByCashboxNamePrefix(cashBoxes, "dispenser_cassette_");
+                List<IBanknoteCounts> acceptorCashbox = filterAcceptorCashboxRows(cashBoxes);
+
+                row.put("cassette_summary", summarizeCassetteBoxes(cassettes));
+                TreeSet<BigDecimal> fallbackDenoms = collectJpyDenominationsSorted(cassettes);
+                List<Map<String, Object>> cashboxSummary = summarizeAcceptorCashboxJpyFlat(acceptorCashbox, fallbackDenoms);
+                if (cashboxSummary.isEmpty()) {
+                    cashboxSummary = Collections.singletonList(emptyAcceptorCashboxSummary(fallbackDenoms));
+                }
+                row.put("cashbox_summary", cashboxSummary);
+                row.put("ok", true);
+            } catch (IllegalArgumentException e) {
+                row.put("ok", false);
+                row.put("error", "invalid_parameters");
+                row.put("detail", e.getMessage());
+            } catch (Throwable e) {
+                log.error("atm/all terminal summary failed: {}", sn, e);
+                row.put("ok", false);
+                row.put("error", "unexpected");
+                row.put("detail", e.getMessage());
+            }
+
+            out.add(row);
+        }
+
+        out.sort(Comparator.comparing(r -> Objects.toString(r.get("serial_number"), "")));
+        body.put("ok", true);
+        body.put("count", out.size());
+        body.put("terminals", out);
+        return body;
     }
 
-    private static Map<String, Object> locationToMap(ILocation loc) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        if (loc == null) {
-            return m;
-        }
-        m.put("public_id", loc.getPublicId());
-        m.put("external_location_id", loc.getExternalLocationId());
-        m.put("name", loc.getName());
-        m.put("contact_address", loc.getContactAddress());
-        m.put("city", loc.getCity());
-        m.put("province", loc.getProvince());
-        m.put("zip", loc.getZip());
-        m.put("country", loc.getCountry());
-        m.put("country_iso2", loc.getCountryIso2());
-        m.put("gps_lat", loc.getGpsLat());
-        m.put("gps_lon", loc.getGpsLon());
-        m.put("time_zone", loc.getTimeZone());
-        m.put("description", loc.getDescription());
-        return m;
-    }
-
-    private static List<Map<String, Object>> banknoteCountsToList(List<IBanknoteCounts> items) {
+    private static List<Map<String, Object>> summarizeCassetteBoxes(List<IBanknoteCounts> items) {
         if (items == null || items.isEmpty()) {
             return Collections.emptyList();
         }
-        List<Map<String, Object>> out = new ArrayList<>(items.size());
-        for (IBanknoteCounts bc : items) {
-            if (bc == null) {
-                continue;
-            }
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("cashbox_name", bc.getCashboxName());
-            row.put("currency", bc.getCurrency());
-            row.put("denomination", bc.getDenomination());
-            row.put("count", bc.getCount());
-            row.put("capacity", bc.getCapacity());
-            out.add(row);
-        }
-        out.sort(Comparator
-                .comparing((Map<String, Object> r) -> Objects.toString(r.get("cashbox_name"), ""))
-                .thenComparing(r -> Objects.toString(r.get("currency"), ""))
-                .thenComparing(r -> Objects.toString(r.get("denomination"), "")));
-        return out;
-    }
-
-    private static List<Map<String, Object>> aggregateBanknotesByCurrencyAndDenomination(List<IBanknoteCounts> cashBoxes) {
-        if (cashBoxes == null || cashBoxes.isEmpty()) {
-            return Collections.emptyList();
-        }
-        Map<String, Map<String, Integer>> agg = new LinkedHashMap<>();
-        for (IBanknoteCounts bc : cashBoxes) {
-            if (bc == null) {
-                continue;
-            }
-            String currency = bc.getCurrency() != null ? bc.getCurrency() : "";
-            String denom = bc.getDenomination() != null ? bc.getDenomination().toPlainString() : "0";
-            int count = bc.getCount();
-            if (count == 0) {
-                continue;
-            }
-            Map<String, Integer> byDenom = agg.computeIfAbsent(currency, k -> new LinkedHashMap<>());
-            byDenom.put(denom, byDenom.getOrDefault(denom, 0) + count);
-        }
+        Map<String, List<IBanknoteCounts>> grouped = groupBanknoteCountsByCashboxName(items);
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Map.Entry<String, Map<String, Integer>> c : agg.entrySet()) {
-            for (Map.Entry<String, Integer> d : c.getValue().entrySet()) {
+        for (Map.Entry<String, List<IBanknoteCounts>> e : grouped.entrySet()) {
+            List<IBanknoteCounts> group = e.getValue();
+            Map<BigDecimal, Integer> countsByDenom = new HashMap<>();
+            for (IBanknoteCounts bc : group) {
+                if (bc == null) {
+                    continue;
+                }
+                int cnt = bc.getCount();
+                String currency = bc.getCurrency();
+                boolean jpy = currency == null || "JPY".equalsIgnoreCase(currency);
+                BigDecimal denom = bc.getDenomination();
+                if (jpy && denom != null) {
+                    BigDecimal d = denom.stripTrailingZeros();
+                    countsByDenom.merge(d, cnt, Integer::sum);
+                }
+            }
+
+            // One row per denomination so total_remaining_amount is "by denomination"
+            TreeSet<BigDecimal> denomsSorted = new TreeSet<>(countsByDenom.keySet());
+            for (BigDecimal d : denomsSorted) {
+                int remaining = countsByDenom.getOrDefault(d, 0);
+                BigDecimal totalAmount = d.multiply(BigDecimal.valueOf(remaining));
+
                 Map<String, Object> row = new LinkedHashMap<>();
-                row.put("currency", c.getKey());
-                row.put("denomination", d.getKey());
-                row.put("count", d.getValue());
+                row.put("cashbox_name", e.getKey());
+                row.put("denomination", denominationToJson(d));
+                row.put("total_remaining_count", remaining);
+                row.put("total_remaining_amount", amountToJson(totalAmount));
                 out.add(row);
             }
         }
         out.sort(Comparator
-                .comparing((Map<String, Object> r) -> Objects.toString(r.get("currency"), ""))
+                .comparing((Map<String, Object> r) -> Objects.toString(r.get("cashbox_name"), ""))
                 .thenComparing(r -> Objects.toString(r.get("denomination"), "")));
         return out;
     }
 
-    private static List<Map<String, Object>> summarizeByCashboxName(List<IBanknoteCounts> items) {
+    /**
+     * Acceptor cashbox: all note counts, total JPY value (JPY rows only; null currency treated as JPY), and three
+     * dynamic denomination slots populated from {@link IBanknoteCounts#getDenomination()} (lowest 3 denominations).
+     */
+    private static List<Map<String, Object>> summarizeAcceptorCashboxJpyFlat(List<IBanknoteCounts> items, TreeSet<BigDecimal> fallbackDenoms) {
         if (items == null || items.isEmpty()) {
             return Collections.emptyList();
         }
+        int totalCount = 0;
+        BigDecimal totalValueJpy = BigDecimal.ZERO;
+        Map<BigDecimal, Integer> countsByDenom = new HashMap<>();
 
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            int cnt = bc.getCount();
+            totalCount += cnt;
+            String currency = bc.getCurrency();
+            boolean jpy = currency == null || "JPY".equalsIgnoreCase(currency);
+            BigDecimal denom = bc.getDenomination();
+            if (jpy && denom != null) {
+                BigDecimal d = denom.stripTrailingZeros();
+                totalValueJpy = totalValueJpy.add(d.multiply(BigDecimal.valueOf(cnt)));
+                countsByDenom.merge(d, cnt, Integer::sum);
+            }
+        }
+
+        TreeSet<BigDecimal> denomsSorted = new TreeSet<>(countsByDenom.keySet());
+        if (denomsSorted.isEmpty() && fallbackDenoms != null && !fallbackDenoms.isEmpty()) {
+            denomsSorted = new TreeSet<>(fallbackDenoms);
+        }
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("cashbox_name", IBanknoteCounts.CN_ACCEPTOR_CASHBOX);
+        summary.put("total_count", totalCount);
+        summary.put("total_value", amountToJson(totalValueJpy));
+        int slot = 1;
+        for (BigDecimal d : denomsSorted) {
+            if (slot > 3) {
+                break;
+            }
+            int c = countsByDenom.getOrDefault(d, 0);
+            BigDecimal lineValue = d.multiply(BigDecimal.valueOf(c));
+            summary.put("banknote_" + slot + "_denomication", denominationToJson(d));
+            summary.put("banknote_" + slot + "_count", c);
+            summary.put("banknote_" + slot + "_value", amountToJson(lineValue));
+            slot++;
+        }
+        while (slot <= 3) {
+            summary.put("banknote_" + slot + "_denomication", null);
+            summary.put("banknote_" + slot + "_count", 0);
+            summary.put("banknote_" + slot + "_value", 0L);
+            slot++;
+        }
+        return Collections.singletonList(summary);
+    }
+
+    /** JSON-friendly number: integral denominations as Long, otherwise plain {@link BigDecimal}. */
+    private static Object denominationToJson(BigDecimal d) {
+        if (d == null) {
+            return null;
+        }
+        BigDecimal s = d.stripTrailingZeros();
+        if (s.scale() <= 0) {
+            return s.longValue();
+        }
+        return s;
+    }
+
+    private static Object amountToJson(BigDecimal v) {
+        if (v == null) {
+            return 0L;
+        }
+        BigDecimal s = v.stripTrailingZeros();
+        if (s.scale() <= 0) {
+            return s.longValue();
+        }
+        return s;
+    }
+
+    /**
+     * Rows the server reports for the bill acceptor / stacker: canonical {@code acceptor_cashbox}, names containing
+     * {@code acceptor}, or any cashbox that is not a dispenser cassette, recycler, or reject slot (CAS-specific names).
+     */
+    private static List<IBanknoteCounts> filterAcceptorCashboxRows(List<IBanknoteCounts> items) {
+        if (items == null || items.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<IBanknoteCounts> out = new ArrayList<>();
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            if (isAcceptorCashboxName(bc.getCashboxName())) {
+                out.add(bc);
+            }
+        }
+        if (!out.isEmpty()) {
+            return out;
+        }
+        return filterResidualNonDispenserCashboxRows(items);
+    }
+
+    /** Dispenser cassettes, recycler drums, and reject — not used for deposit / acceptor summary. */
+    private static boolean isKnownNonAcceptorHardwareCashboxName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        String n = name.trim();
+        String lower = n.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("dispenser_")) {
+            return true;
+        }
+        if (lower.startsWith("recycler")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static List<IBanknoteCounts> filterResidualNonDispenserCashboxRows(List<IBanknoteCounts> items) {
+        List<IBanknoteCounts> out = new ArrayList<>();
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            String name = bc.getCashboxName();
+            if (name == null || name.trim().isEmpty()) {
+                continue;
+            }
+            if (!isKnownNonAcceptorHardwareCashboxName(name)) {
+                out.add(bc);
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, Object> emptyAcceptorCashboxSummary(TreeSet<BigDecimal> fallbackDenoms) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("cashbox_name", IBanknoteCounts.CN_ACCEPTOR_CASHBOX);
+        summary.put("total_count", 0);
+        summary.put("total_value", 0L);
+        TreeSet<BigDecimal> denomsSorted = (fallbackDenoms != null) ? new TreeSet<>(fallbackDenoms) : new TreeSet<>();
+        int slot = 1;
+        for (BigDecimal d : denomsSorted) {
+            if (slot > 3) {
+                break;
+            }
+            summary.put("banknote_" + slot + "_denomication", denominationToJson(d));
+            summary.put("banknote_" + slot + "_count", 0);
+            summary.put("banknote_" + slot + "_value", 0L);
+            slot++;
+        }
+        while (slot <= 3) {
+            // Ensure non-null even when we have no fallback info.
+            summary.put("banknote_" + slot + "_denomication", 0);
+            summary.put("banknote_" + slot + "_count", 0);
+            summary.put("banknote_" + slot + "_value", 0L);
+            slot++;
+        }
+        return summary;
+    }
+
+    private static TreeSet<BigDecimal> collectJpyDenominationsSorted(List<IBanknoteCounts> items) {
+        TreeSet<BigDecimal> out = new TreeSet<>();
+        if (items == null || items.isEmpty()) {
+            return out;
+        }
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            String currency = bc.getCurrency();
+            boolean jpy = currency == null || "JPY".equalsIgnoreCase(currency);
+            if (!jpy) {
+                continue;
+            }
+            BigDecimal denom = bc.getDenomination();
+            if (denom != null) {
+                out.add(denom.stripTrailingZeros());
+            }
+        }
+        return out;
+    }
+
+    private static boolean isAcceptorCashboxName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        String n = name.trim();
+        if (IBanknoteCounts.CN_ACCEPTOR_CASHBOX.equalsIgnoreCase(n)) {
+            return true;
+        }
+        String lower = n.toLowerCase(Locale.ROOT);
+        if (!lower.contains("acceptor")) {
+            return false;
+        }
+        if (lower.startsWith("dispenser_") || lower.startsWith("recycler")) {
+            return false;
+        }
+        return !IBanknoteCounts.CN_DISPENSER_REJECT.equalsIgnoreCase(n);
+    }
+
+    private static Map<String, List<IBanknoteCounts>> groupBanknoteCountsByCashboxName(List<IBanknoteCounts> items) {
         Map<String, List<IBanknoteCounts>> grouped = new LinkedHashMap<>();
         for (IBanknoteCounts bc : items) {
             if (bc == null) {
@@ -555,70 +756,7 @@ public class CoinHubRestService implements IRestService {
             String name = bc.getCashboxName() != null ? bc.getCashboxName() : "";
             grouped.computeIfAbsent(name, k -> new ArrayList<>()).add(bc);
         }
-
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (Map.Entry<String, List<IBanknoteCounts>> e : grouped.entrySet()) {
-            String cashboxName = e.getKey();
-            List<IBanknoteCounts> rows = e.getValue();
-
-            int totalCount = 0;
-            Integer capacity = null;
-            BigDecimal totalValue = BigDecimal.ZERO;
-            String currencySingle = null;
-            boolean currencyMixed = false;
-
-            List<Map<String, Object>> banknotes = new ArrayList<>();
-            for (IBanknoteCounts bc : rows) {
-                if (bc == null) {
-                    continue;
-                }
-                totalCount += bc.getCount();
-                if (bc.getCapacity() != null) {
-                    capacity = capacity == null ? bc.getCapacity() : Math.max(capacity, bc.getCapacity());
-                }
-                String currency = bc.getCurrency();
-                if (currencySingle == null) {
-                    currencySingle = currency;
-                } else if (!Objects.equals(currencySingle, currency)) {
-                    currencyMixed = true;
-                }
-                BigDecimal denom = bc.getDenomination();
-                BigDecimal value = denom != null ? denom.multiply(BigDecimal.valueOf(bc.getCount())) : null;
-                if (value != null) {
-                    totalValue = totalValue.add(value);
-                }
-
-                Map<String, Object> bn = new LinkedHashMap<>();
-                bn.put("currency", currency);
-                bn.put("denomination", denom);
-                bn.put("count", bc.getCount());
-                bn.put("value", value);
-                banknotes.add(bn);
-            }
-            banknotes.sort(Comparator
-                    .comparing((Map<String, Object> r) -> Objects.toString(r.get("currency"), ""))
-                    .thenComparing(r -> Objects.toString(r.get("denomination"), "")));
-
-            Map<String, Object> summary = new LinkedHashMap<>();
-            summary.put("cashbox_name", cashboxName);
-            summary.put("total_count", totalCount);
-            summary.put("capacity", capacity);
-            if (capacity != null && capacity > 0) {
-                BigDecimal ratio =
-                        BigDecimal.valueOf(totalCount)
-                                .divide(BigDecimal.valueOf(capacity), 4, RoundingMode.HALF_UP);
-                summary.put("fill_ratio", ratio);
-            } else {
-                summary.put("fill_ratio", null);
-            }
-            summary.put("currency", currencyMixed ? null : currencySingle);
-            summary.put("total_value", totalValue);
-            summary.put("banknotes", banknotes);
-            out.add(summary);
-        }
-
-        out.sort(Comparator.comparing((Map<String, Object> r) -> Objects.toString(r.get("cashbox_name"), "")));
-        return out;
+        return grouped;
     }
 
     private static List<IBanknoteCounts> filterByCashboxNamePrefix(List<IBanknoteCounts> items, String prefix) {
@@ -632,22 +770,6 @@ public class CoinHubRestService implements IRestService {
             }
             String name = bc.getCashboxName();
             if (name != null && name.startsWith(prefix)) {
-                out.add(bc);
-            }
-        }
-        return out;
-    }
-
-    private static List<IBanknoteCounts> filterByCashboxNameExact(List<IBanknoteCounts> items, String exact) {
-        if (items == null || items.isEmpty() || exact == null) {
-            return Collections.emptyList();
-        }
-        List<IBanknoteCounts> out = new ArrayList<>();
-        for (IBanknoteCounts bc : items) {
-            if (bc == null) {
-                continue;
-            }
-            if (exact.equals(bc.getCashboxName())) {
                 out.add(bc);
             }
         }
@@ -836,6 +958,9 @@ public class CoinHubRestService implements IRestService {
     private static final String CASHBACK_EMAIL_SUBJECT_TEMPLATE_PREFIX =
             CASHBACK_MAIL_CONTENTS_DIR + "coinhub_cashback_subject_";
 
+    private static final String CASHBACK_EMAIL_BODY_HTML_TEMPLATE_PREFIX =
+            CASHBACK_MAIL_CONTENTS_DIR + "coinhub_cashback_email_";
+
     /**
      * Sends the cashback redeem QR as {@code cashback-qr.png} via CAS mail (SMTP must be configured on the server).
      * Sender address: {@code cashback_mail_from} in the {@code coinhub} extension config file.
@@ -850,6 +975,7 @@ public class CoinHubRestService implements IRestService {
             String languageRaw) {
         responseBody.put("email_locale_resolved", sanitizeLanguageTagForConfig(languageRaw));
         String from = ctx.getConfigProperty("coinhub", "cashback_mail_from", null);
+        String logoUrl = ctx.getConfigProperty("coinhub", "cashback_logo_url", null);
         if (from == null || from.trim().isEmpty()) {
             log.warn(
                     "Cashback QR email not sent: add cashback_mail_from to coinhub extension config (sender From: address)");
@@ -876,19 +1002,34 @@ public class CoinHubRestService implements IRestService {
         String subject =
                 resolveCashbackEmailSubjectText(
                         ctx, terminalSerial, cashback, qrPayload, languageRaw, responseBody);
-        String text =
-                resolveCashbackEmailBodyText(
-                        ctx, terminalSerial, cashback, qrPayload, languageRaw, responseBody);
         try {
-            ctx.sendMailAsyncWithAttachment(
-                    from.trim(),
-                    toEmail,
-                    subject,
-                    text,
-                    "cashback-qr.png",
-                    png,
-                    "image/png",
-                    null);
+            String html =
+                    resolveCashbackEmailBodyHtml(
+                            ctx, terminalSerial, cashback, qrPayload, languageRaw, responseBody, logoUrl);
+            if (html != null && !html.trim().isEmpty()) {
+                ctx.sendHTMLMailAsyncWithAttachment(
+                        from.trim(),
+                        toEmail,
+                        subject,
+                        html,
+                        "cashback-qr.png",
+                        png,
+                        "image/png",
+                        null);
+            } else {
+                String text =
+                        resolveCashbackEmailBodyText(
+                                ctx, terminalSerial, cashback, qrPayload, languageRaw, responseBody);
+                ctx.sendMailAsyncWithAttachment(
+                        from.trim(),
+                        toEmail,
+                        subject,
+                        text,
+                        "cashback-qr.png",
+                        png,
+                        "image/png",
+                        null);
+            }
             responseBody.put("email_queued", true);
         } catch (Exception e) {
             log.error("cashback email send failed", e);
@@ -909,7 +1050,7 @@ public class CoinHubRestService implements IRestService {
             String languageRaw,
             Map<String, Object> responseBody) {
         String tag = sanitizeLanguageTagForConfig(languageRaw);
-        CashbackTemplateFile template = loadCashbackConfigTemplate(ctx, CASHBACK_EMAIL_SUBJECT_TEMPLATE_PREFIX, tag);
+        CashbackTemplateFile template = loadCashbackConfigTemplate(ctx, CASHBACK_EMAIL_SUBJECT_TEMPLATE_PREFIX, tag, "txt");
         if (template != null && !template.content.trim().isEmpty()) {
             if (responseBody != null) {
                 responseBody.put("email_subject_template", template.loadedFromPath);
@@ -938,7 +1079,7 @@ public class CoinHubRestService implements IRestService {
             String languageRaw,
             Map<String, Object> responseBody) {
         String tag = sanitizeLanguageTagForConfig(languageRaw);
-        CashbackTemplateFile template = loadCashbackConfigTemplate(ctx, CASHBACK_EMAIL_BODY_TEMPLATE_PREFIX, tag);
+        CashbackTemplateFile template = loadCashbackConfigTemplate(ctx, CASHBACK_EMAIL_BODY_TEMPLATE_PREFIX, tag, "txt");
         if (template != null && !template.content.trim().isEmpty()) {
             if (responseBody != null) {
                 responseBody.put("email_body_template", template.loadedFromPath);
@@ -949,6 +1090,33 @@ public class CoinHubRestService implements IRestService {
             responseBody.put("email_body_template", "default");
         }
         return buildDefaultCashbackPlainEmailBody(terminalSerial, cashback, qrPayload);
+    }
+
+    /**
+     * Loads {@code mail_contents/coinhub_cashback_email_*.html} from CAS config directory when present.
+     * If absent, returns {@code null} and caller should use plain-text fallback.
+     */
+    private static String resolveCashbackEmailBodyHtml(
+            IExtensionContext ctx,
+            String terminalSerial,
+            ITransactionCashbackInfo cashback,
+            String qrPayload,
+            String languageRaw,
+            Map<String, Object> responseBody,
+            String logoUrl) {
+        String tag = sanitizeLanguageTagForConfig(languageRaw);
+        CashbackTemplateFile template =
+                loadCashbackConfigTemplate(ctx, CASHBACK_EMAIL_BODY_HTML_TEMPLATE_PREFIX, tag, "html");
+        if (template != null && !template.content.trim().isEmpty()) {
+            if (responseBody != null) {
+                responseBody.put("email_body_template_html", template.loadedFromPath);
+            }
+            return applyCashbackEmailTemplateHtml(template.content, terminalSerial, cashback, qrPayload, logoUrl);
+        }
+        if (responseBody != null) {
+            responseBody.put("email_body_template_html", "missing");
+        }
+        return null;
     }
 
     private static String sanitizeLanguageTagForConfig(String raw) {
@@ -985,16 +1153,17 @@ public class CoinHubRestService implements IRestService {
      * (some CAS builds only resolve flat names).
      */
     private static CashbackTemplateFile loadCashbackConfigTemplate(
-            IExtensionContext ctx, String basenamePrefix, String sanitizedTag) {
+            IExtensionContext ctx, String basenamePrefix, String sanitizedTag, String extension) {
         String primary =
                 sanitizedTag.contains("-") ? sanitizedTag.substring(0, sanitizedTag.indexOf('-')) : sanitizedTag;
         LinkedHashSet<String> names = new LinkedHashSet<>();
-        names.add(basenamePrefix + sanitizedTag + ".txt");
+        String ext = extension != null && !extension.trim().isEmpty() ? extension.trim() : "txt";
+        names.add(basenamePrefix + sanitizedTag + "." + ext);
         if (!primary.equals(sanitizedTag)) {
-            names.add(basenamePrefix + primary + ".txt");
+            names.add(basenamePrefix + primary + "." + ext);
         }
         if ("en".equals(primary)) {
-            names.add(basenamePrefix + "en.txt");
+            names.add(basenamePrefix + "en." + ext);
         }
         for (String name : names) {
             CashbackTemplateFile loaded = readCashbackTemplateFile(ctx, name);
@@ -1043,12 +1212,47 @@ public class CoinHubRestService implements IRestService {
             ITransactionCashbackInfo cashback,
             String qrPayload) {
         long validity = cashback.getValidityInMinutes();
+        String time = ZonedDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         return template
                 .replace("{terminal}", terminalSerial)
                 .replace("{amount}", cashback.getCashAmount().toPlainString())
                 .replace("{currency}", cashback.getCashCurrency())
                 .replace("{validity_minutes}", Long.toString(validity))
+                .replace("{transaction_id}", Objects.toString(cashback.getRemoteTransactionId(), ""))
+                .replace("{time}", time)
+                .replace("{logo}", "CoinHub")
                 .replace("{qr_payload}", qrPayload);
+    }
+
+    private static String applyCashbackEmailTemplateHtml(
+            String template,
+            String terminalSerial,
+            ITransactionCashbackInfo cashback,
+            String qrPayload,
+            String logoUrl) {
+        String logoHtml = buildLogoHtml(logoUrl);
+        return applyCashbackEmailTemplate(template, terminalSerial, cashback, qrPayload)
+                .replace("{logo_url}", logoUrl != null ? logoUrl : "")
+                .replace("{logo_html}", logoHtml);
+    }
+
+    private static String buildLogoHtml(String logoUrl) {
+        String url = logoUrl != null ? logoUrl.trim() : "";
+        if (url.isEmpty()) {
+            return "CoinHub";
+        }
+        // Keep markup minimal for broad email-client compatibility.
+        return "<img src=\"" + escapeHtmlAttr(url) + "\" alt=\"CoinHub\" style=\"height:32px;max-width:100%;\" />";
+    }
+
+    private static String escapeHtmlAttr(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("&", "&amp;")
+                .replace("\"", "&quot;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
     }
 
     /** Default English subject when no {@code mail_contents/coinhub_cashback_subject_*.txt} exists. */
