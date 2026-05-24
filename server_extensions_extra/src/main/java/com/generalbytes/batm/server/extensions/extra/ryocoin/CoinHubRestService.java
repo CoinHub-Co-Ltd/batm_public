@@ -21,9 +21,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.generalbytes.batm.server.extensions.IExtensionContext;
 import com.generalbytes.batm.server.extensions.IBanknoteCounts;
+import com.generalbytes.batm.server.extensions.ILocation;
+import com.generalbytes.batm.server.extensions.IOrganization;
 import com.generalbytes.batm.server.extensions.IRestService;
 import com.generalbytes.batm.server.extensions.ITerminal;
 import com.generalbytes.batm.server.extensions.ITransactionCashbackInfo;
+import com.generalbytes.batm.server.extensions.ITransactionDetails;
 import com.generalbytes.batm.server.extensions.exceptions.CashbackException;
 
 import org.slf4j.Logger;
@@ -45,11 +48,17 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -431,7 +440,39 @@ public class CoinHubRestService implements IRestService {
     }
 
     /**
-     * Returns cassette + acceptor cashbox summaries for all terminals.
+     * Returns how many ATMs are included in {@link #getAtmInfoAll()}: active, non-deleted terminals with a non-empty serial number.
+     *
+     * <p>Example:</p>
+     * {@code GET /extensions/coinhub/atm/total}
+     */
+    @GET
+    @Path("/atm/total")
+    public Map<String, Object> getAtmTotal() {
+        Map<String, Object> body = new LinkedHashMap<>();
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            body.put("ok", false);
+            body.put("error", "extension_context_unavailable");
+            return body;
+        }
+
+        try {
+            int total = listCoinhubActiveAtmsWithSerial(ctx).size();
+            body.put("ok", true);
+            body.put("total", total);
+        } catch (Throwable e) {
+            log.error("atm/total endpoint error", e);
+            body.put("ok", false);
+            body.put("error", "unexpected");
+            body.put("detail", e.getMessage());
+        }
+        return body;
+    }
+
+    /**
+     * Returns cassette + acceptor cashbox summaries for active, non-deleted terminals, plus {@code company}
+     * (organization name) and {@code printer_status} (from terminal hardware error flags).
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/atm/all}
@@ -448,17 +489,12 @@ public class CoinHubRestService implements IRestService {
             return body;
         }
 
-        List<ITerminal> terminals = safeList(ctx.findAllTerminals());
+        List<ITerminal> terminals = listCoinhubActiveAtmsWithSerial(ctx);
+        Map<Long, String> organizationIdToName = buildOrganizationIdToNameMap(ctx);
         List<Map<String, Object>> out = new ArrayList<>();
 
         for (ITerminal t : terminals) {
-            if (t == null) {
-                continue;
-            }
             String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
-            if (sn.isEmpty()) {
-                continue;
-            }
 
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("serial_number", sn);
@@ -466,6 +502,8 @@ public class CoinHubRestService implements IRestService {
             row.put("terminal_active", t.isActive());
             row.put("terminal_locked", t.isLocked());
             row.put("terminal_deleted", t.isDeleted());
+            row.put("company", companyNameForTerminal(t, organizationIdToName));
+            row.put("printer_status", printerStatusFromErrors(t.getErrors()));
 
             try {
                 List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
@@ -498,6 +536,203 @@ public class CoinHubRestService implements IRestService {
         body.put("ok", true);
         body.put("count", out.size());
         body.put("terminals", out);
+        return body;
+    }
+
+    /**
+     * Returns terminal list with common operational details for active, non-deleted terminals only.
+     *
+     * <p>Example:</p>
+     * {@code GET /extensions/coinhub/terminal/all/details}
+     */
+    @GET
+    @Path("/terminal/all/details")
+    public Map<String, Object> getTerminalDetailsAll() {
+        Map<String, Object> body = new LinkedHashMap<>();
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            body.put("ok", false);
+            body.put("error", "extension_context_unavailable");
+            return body;
+        }
+
+        List<ITerminal> terminals = listCoinhubActiveAtmsWithSerial(ctx);
+        Map<Long, String> organizationIdToName = buildOrganizationIdToNameMap(ctx);
+        List<Map<String, Object>> out = new ArrayList<>();
+
+        for (ITerminal t : terminals) {
+            String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("serial_number", sn);
+            row.put("terminal_name", t.getName());
+            row.put("company", companyNameForTerminal(t, organizationIdToName));
+            row.put("location", locationToJson(t.getLocation()));
+
+            row.put("terminal_active", t.isActive());
+            row.put("terminal_locked", t.isLocked());
+            row.put("terminal_deleted", t.isDeleted());
+
+            row.put("connected_at", dateToEpochMillis(t.getConnectedAt()));
+            row.put("last_ping_at", dateToEpochMillis(t.getLastPingAt()));
+            row.put("ping_duration_ms", t.getLastPingDuration());
+
+            row.put("errors", t.getErrors());
+            row.put("operational_mode", t.getOperationalMode());
+            row.put("status", terminalStatusFromTerminal(t));
+            row.put("printer_status", printerStatusFromErrors(t.getErrors()));
+
+            // Terminal "created/added at" is not available via ITerminal in this public API.
+            row.put("created_at", null);
+
+            try {
+                List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
+                row.put("cash_status", cashStatusFromCashBoxes(cashBoxes));
+                row.put("ok", true);
+            } catch (IllegalArgumentException e) {
+                row.put("ok", true);
+                row.put("cash_status", null);
+                row.put("cash_status_warning", "unavailable");
+                row.put("cash_status_detail", e.getMessage());
+            } catch (Throwable e) {
+                log.error("terminal/all/details cash status failed: {}", sn, e);
+                row.put("ok", true);
+                row.put("cash_status", null);
+                row.put("cash_status_warning", "unexpected");
+                row.put("cash_status_detail", e.getMessage());
+            }
+
+            out.add(row);
+        }
+
+        out.sort(Comparator.comparing(r -> Objects.toString(r.get("serial_number"), "")));
+        body.put("ok", true);
+        body.put("count", out.size());
+        body.put("terminals", out);
+        return body;
+    }
+
+    /**
+     * Returns transactions for a terminal identified by its serial number, optionally bounded by server time.
+     *
+     * <p>Each row contains: {@code terminal_time}, {@code remote_transaction_id}, {@code type}/{@code type_label},
+     * {@code cash_amount} + {@code cash_currency}, {@code crypto_amount} + {@code crypto_currency},
+     * {@code destination_address}, {@code identity_public_id}, {@code status}/{@code status_label}.</p>
+     *
+     * <p>Examples:</p>
+     * <ul>
+     *     <li>{@code GET /extensions/coinhub/transactions?serial_number=BT401469}</li>
+     *     <li>{@code GET /extensions/coinhub/transactions?serial_number=BT401469&from=2025-01-01T00:00:00Z&to=2025-12-31T23:59:59Z}</li>
+     *     <li>{@code GET /extensions/coinhub/transactions?serial_number=BT401469&previous_rid=RIDXXXX}</li>
+     *     <li>{@code GET /extensions/coinhub/transactions?serial_number=BT401469&type=1&limit=50}</li>
+     * </ul>
+     *
+     * <p>Query parameters (all but {@code serial_number} are optional):</p>
+     * <ul>
+     *     <li>{@code serial_number} (aliases: {@code terminal}, {@code serial}, {@code sn}) — required</li>
+     *     <li>{@code from} (aliases: {@code server_time_from}, {@code start}, {@code since}) — ISO-8601 date/time or epoch millis</li>
+     *     <li>{@code to} (aliases: {@code server_time_to}, {@code end}, {@code until}) — ISO-8601 date/time or epoch millis</li>
+     *     <li>{@code previous_rid} (aliases: {@code previousRID}, {@code after_rid}) — only transactions NEWER than this remote ID</li>
+     *     <li>{@code limit} (alias: {@code max}) — cap the number of returned rows after type filtering</li>
+     *     <li>{@code type} — filter by transaction type
+     *         (0=BUY_CRYPTO, 1=SELL_CRYPTO, 2=WITHDRAW_CASH, 3=CASHBACK, 4=ORDER_CRYPTO, 5=DEPOSIT_CASH)</li>
+     * </ul>
+     */
+    @GET
+    @Path("/transactions")
+    public Map<String, Object> getTransactions(
+            @Context HttpServletRequest servletRequest,
+            @Context UriInfo uriInfo) {
+        Map<String, Object> body = new LinkedHashMap<>();
+
+        String serialNumber = firstParam(servletRequest, uriInfo, "serial_number", "terminal", "serial", "sn");
+        if (serialNumber == null || serialNumber.trim().isEmpty()) {
+            body.put("ok", false);
+            body.put("error", "missing_parameters");
+            body.put("detail", "serial_number is required");
+            return body;
+        }
+
+        String fromRaw = firstParam(servletRequest, uriInfo, "from", "server_time_from", "start", "since");
+        String toRaw = firstParam(servletRequest, uriInfo, "to", "server_time_to", "end", "until");
+        String previousRid = firstParam(servletRequest, uriInfo, "previous_rid", "previousRID", "after_rid");
+        String limitRaw = firstParam(servletRequest, uriInfo, "limit", "max");
+        String typeRaw = firstParam(servletRequest, uriInfo, "type");
+
+        Date fromDate;
+        Date toDate;
+        try {
+            fromDate = parseDateParam(fromRaw);
+            toDate = parseDateParam(toRaw);
+        } catch (IllegalArgumentException e) {
+            body.put("ok", false);
+            body.put("error", "invalid_parameters");
+            body.put("detail", e.getMessage());
+            return body;
+        }
+        Integer typeFilter = parseIntegerParam(typeRaw);
+        Integer limit = parseIntegerParam(limitRaw);
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            body.put("ok", false);
+            body.put("error", "extension_context_unavailable");
+            return body;
+        }
+
+        String sn = serialNumber.trim();
+        try {
+            ITerminal terminal = ctx.findTerminalBySerialNumber(sn);
+            if (terminal == null) {
+                body.put("ok", false);
+                body.put("error", "terminal_not_found");
+                body.put("serial_number", sn);
+                return body;
+            }
+
+            List<ITransactionDetails> transactions = safeList(
+                    ctx.findTransactions(sn, fromDate, toDate, previousRid, false));
+
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (ITransactionDetails tx : transactions) {
+                if (tx == null) {
+                    continue;
+                }
+                if (typeFilter != null && tx.getType() != typeFilter) {
+                    continue;
+                }
+                rows.add(transactionToJson(tx));
+                if (limit != null && limit > 0 && rows.size() >= limit) {
+                    break;
+                }
+            }
+
+            body.put("ok", true);
+            body.put("serial_number", sn);
+            body.put("count", rows.size());
+            body.put("from", dateToEpochMillis(fromDate));
+            body.put("to", dateToEpochMillis(toDate));
+            body.put("previous_rid", previousRid);
+            if (typeFilter != null) {
+                body.put("type_filter", typeFilter);
+                body.put("type_filter_label", transactionTypeLabel(typeFilter));
+            }
+            if (limit != null) {
+                body.put("limit", limit);
+            }
+            body.put("transactions", rows);
+        } catch (IllegalArgumentException e) {
+            body.put("ok", false);
+            body.put("error", "invalid_parameters");
+            body.put("detail", e.getMessage());
+        } catch (Throwable e) {
+            log.error("transactions endpoint error", e);
+            body.put("ok", false);
+            body.put("error", "unexpected");
+            body.put("detail", e.getMessage());
+        }
+
         return body;
     }
 
@@ -778,6 +1013,505 @@ public class CoinHubRestService implements IRestService {
 
     private static <T> List<T> safeList(List<T> in) {
         return in != null ? in : Collections.emptyList();
+    }
+
+    /**
+     * Terminals included in list endpoints: non-null, active, not deleted, non-blank serial.
+     */
+    private static List<ITerminal> listCoinhubActiveAtmsWithSerial(IExtensionContext ctx) {
+        List<ITerminal> out = new ArrayList<>();
+        if (ctx == null) {
+            return out;
+        }
+        for (ITerminal t : safeList(ctx.findAllTerminals())) {
+            if (t == null || !t.isActive() || t.isDeleted()) {
+                continue;
+            }
+            String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
+            if (sn.isEmpty()) {
+                continue;
+            }
+            out.add(t);
+        }
+        return out;
+    }
+
+    private static Map<Long, String> buildOrganizationIdToNameMap(IExtensionContext ctx) {
+        Map<Long, String> out = new HashMap<>();
+        if (ctx == null) {
+            return out;
+        }
+        for (IOrganization o : safeList(ctx.getOrganizations())) {
+            if (o == null || o.getId() == null) {
+                continue;
+            }
+            try {
+                out.put(Long.parseLong(o.getId().trim()), o.getName());
+            } catch (NumberFormatException e) {
+                // ignore non-numeric organization ids
+            }
+        }
+        return out;
+    }
+
+    private static String companyNameForTerminal(ITerminal t, Map<Long, String> organizationIdToName) {
+        if (t == null || organizationIdToName == null) {
+            return null;
+        }
+        long oid = t.getOrganizationId();
+        if (oid == 0L) {
+            return null;
+        }
+        return organizationIdToName.get(oid);
+    }
+
+    /**
+     * Human-readable printer line for admin-style lists, derived from {@link ITerminal#getErrors()} hardware bits.
+     */
+    private static String printerStatusFromErrors(long errors) {
+        if ((errors & ITerminal.ERROR_PRINTER_DISCONNECTED) != 0) {
+            return "Printer disconnected";
+        }
+        if ((errors & ITerminal.WARNING_NO_PRINTER_PAPER) != 0) {
+            return "Paper missing";
+        }
+        if ((errors & ITerminal.WARNING_PRINTER_PAPER_LOW) != 0) {
+            return "Paper low";
+        }
+        return "Ok";
+    }
+
+    private static Long dateToEpochMillis(Date d) {
+        return d != null ? d.getTime() : null;
+    }
+
+    private static Map<String, Object> locationToJson(ILocation loc) {
+        if (loc == null) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", loc.getName());
+        out.put("address", loc.getContactAddress());
+        out.put("city", loc.getCity());
+        out.put("country", loc.getCountry());
+        out.put("country_iso2", loc.getCountryIso2());
+        out.put("province", loc.getProvince());
+        out.put("zip", loc.getZip());
+        out.put("gps_lat", loc.getGpsLat());
+        out.put("gps_lon", loc.getGpsLon());
+        out.put("time_zone", loc.getTimeZone());
+        out.put("public_id", loc.getPublicId());
+        out.put("external_location_id", loc.getExternalLocationId());
+        return out;
+    }
+
+    /**
+     * Simple terminal status derived from last ping time and {@link ITerminal#getErrors()}.
+     * <ul>
+     *     <li>{@code NEVER_PINGED} - no {@link ITerminal#getLastPingAt()}</li>
+     *     <li>{@code OFFLINE} - last ping older than 5 minutes</li>
+     *     <li>{@code WARNING} - online, but errors bitmask non-zero</li>
+     *     <li>{@code OK} - online and no errors</li>
+     * </ul>
+     */
+    private static String terminalStatusFromTerminal(ITerminal t) {
+        if (t == null) {
+            return "UNKNOWN";
+        }
+        Date lastPingAt = t.getLastPingAt();
+        if (lastPingAt == null) {
+            return "NEVER_PINGED";
+        }
+        long now = System.currentTimeMillis();
+        if (lastPingAt.getTime() + (5L * 60L * 1000L) < now) {
+            return "OFFLINE";
+        }
+        return t.getErrors() == 0L ? "OK" : "WARNING";
+    }
+
+    /**
+     * Cash status derived from cashbox counts.
+     *
+     * <p>Rules (defaults) aligned with UI legend:</p>
+     * <ul>
+     *     <li>{@code OK}</li>
+     *     <li>{@code LOW_BALANCE}</li>
+     *     <li>{@code SEVERE_LOW_BALANCE}</li>
+     *     <li>{@code EMPTY}</li>
+     * </ul>
+     *
+     * <p>Thresholds are based on total note counts per cassette (ATM technical parameters):</p>
+     * <ul>
+     *     <li>{@code EMPTY}: total notes == 0</li>
+     *     <li>{@code SEVERE_LOW_BALANCE}: total notes &lt; 10 (half of near-end, conservative default)</li>
+     *     <li>{@code LOW_BALANCE}: total notes &lt; 20 (near-end threshold)</li>
+     * </ul>
+     *
+     * <p>Overall is the worst level across all cassettes. If there is no cassette data, overall is {@code UNKNOWN}.</p>
+     */
+    private static Map<String, Object> cashStatusFromCashBoxes(List<IBanknoteCounts> cashBoxes) {
+        // Technical parameters
+        final int cassetteCapacityNotes = 500;
+        final int cassetteNearEndThresholdNotes = 20;
+        final int cassetteSevereLowThresholdNotes = 10; // not provided; chosen as half of near-end
+
+        final int cashboxCapacityNotes = 1200;
+        final int cashboxNearFullThresholdNotes = 1000;
+        final int cashboxRejectFullThresholdNotes = 30;
+
+        // Prefer canonical CAS naming, but fall back to any cashbox containing "cassette"
+        // (some deployments expose different cashbox name prefixes).
+        List<IBanknoteCounts> cassettes = filterByCashboxNamePrefix(cashBoxes, "dispenser_cassette_");
+        if (cassettes.isEmpty()) {
+            cassettes = filterCashboxesByNameContains(cashBoxes, "cassette");
+        }
+        List<IBanknoteCounts> acceptor = filterAcceptorCashboxRows(cashBoxes);
+
+        Map<String, Integer> cassetteTotals = new HashMap<>();
+        Map<String, BigDecimal> cassetteDenoms = new HashMap<>();
+        Map<String, BigDecimal> cassetteAmountRemainingJpy = new HashMap<>();
+        for (IBanknoteCounts bc : safeList(cassettes)) {
+            if (bc == null || bc.getCashboxName() == null) {
+                continue;
+            }
+            cassetteTotals.merge(bc.getCashboxName(), bc.getCount(), Integer::sum);
+            BigDecimal denom = bc.getDenomination();
+            if (denom != null && !cassetteDenoms.containsKey(bc.getCashboxName())) {
+                cassetteDenoms.put(bc.getCashboxName(), denom.stripTrailingZeros());
+            }
+            // Remaining JPY amount for the cassette (only for JPY rows; null currency treated as JPY for parity)
+            String currency = bc.getCurrency();
+            boolean jpy = currency == null || "JPY".equalsIgnoreCase(currency);
+            if (jpy && denom != null) {
+                BigDecimal d = denom.stripTrailingZeros();
+                BigDecimal lineAmount = d.multiply(BigDecimal.valueOf(bc.getCount()));
+                cassetteAmountRemainingJpy.merge(bc.getCashboxName(), lineAmount, BigDecimal::add);
+            }
+        }
+
+        int emptyCassettes = 0;
+        int severeLowCassettes = 0;
+        int lowCassettes = 0;
+        for (Map.Entry<String, Integer> e : cassetteTotals.entrySet()) {
+            int total = e.getValue() != null ? e.getValue() : 0;
+            if (total == 0) {
+                emptyCassettes++;
+            } else if (total < cassetteSevereLowThresholdNotes) {
+                severeLowCassettes++;
+            } else if (total < cassetteNearEndThresholdNotes) {
+                lowCassettes++;
+            }
+        }
+
+        // Per-cassette level (for C1/C2/C3 UI)
+        Map<String, String> cassetteLevels = new LinkedHashMap<>();
+        Map<String, String> cassetteLevelLabels = new LinkedHashMap<>();
+        TreeSet<String> cassetteNamesSorted = new TreeSet<>(cassetteTotals.keySet());
+        for (String name : cassetteNamesSorted) {
+            int total = cassetteTotals.getOrDefault(name, 0);
+            String level;
+            if (total == 0) {
+                level = "EMPTY";
+            } else if (total < cassetteSevereLowThresholdNotes) {
+                level = "SEVERE_LOW_BALANCE";
+            } else if (total < cassetteNearEndThresholdNotes) {
+                level = "LOW_BALANCE";
+            } else {
+                level = "OK";
+            }
+            cassetteLevels.put(name, level);
+            cassetteLevelLabels.put(name, cashStatusLabel(level));
+        }
+
+        String cassettesStatus;
+        if (cassetteTotals.isEmpty()) {
+            cassettesStatus = "UNKNOWN";
+        } else if (emptyCassettes > 0) {
+            cassettesStatus = "EMPTY";
+        } else if (severeLowCassettes > 0) {
+            cassettesStatus = "SEVERE_LOW_BALANCE";
+        } else if (lowCassettes > 0) {
+            cassettesStatus = "LOW_BALANCE";
+        } else {
+            cassettesStatus = "OK";
+        }
+
+        int acceptorTotalCount = 0;
+        for (IBanknoteCounts bc : safeList(acceptor)) {
+            if (bc == null) {
+                continue;
+            }
+            acceptorTotalCount += bc.getCount();
+        }
+        String cashboxStatus;
+        if (acceptor.isEmpty()) {
+            cashboxStatus = "UNKNOWN";
+        } else if (acceptorTotalCount == 0) {
+            cashboxStatus = "EMPTY";
+        } else if (acceptorTotalCount >= cashboxCapacityNotes) {
+            cashboxStatus = "FULL";
+        } else if (acceptorTotalCount >= cashboxNearFullThresholdNotes) {
+            cashboxStatus = "NEAR_FULL";
+        } else {
+            cashboxStatus = "OK";
+        }
+
+        String overall = cassettesStatus;
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("overall", overall);
+        out.put("overall_label", cashStatusLabel(overall));
+        out.put("cassettes", cassettesStatus);
+        out.put("cashbox", cashboxStatus);
+        out.put("cassette_capacity_notes", cassetteCapacityNotes);
+        out.put("cassette_near_end_threshold_notes", cassetteNearEndThresholdNotes);
+        out.put("cassette_severe_low_threshold_notes", cassetteSevereLowThresholdNotes);
+        out.put("cashbox_capacity_notes", cashboxCapacityNotes);
+        out.put("cashbox_near_full_threshold_notes", cashboxNearFullThresholdNotes);
+        out.put("cashbox_reject_full_threshold_notes", cashboxRejectFullThresholdNotes);
+        out.put("cassettes_empty_count", emptyCassettes);
+        out.put("cassettes_severe_low_count", severeLowCassettes);
+        out.put("cassettes_low_count", lowCassettes);
+        out.put("cassette_levels", cassetteLevels);
+        out.put("cassette_level_labels", cassetteLevelLabels);
+        out.put("cassette_note_counts", cassetteTotals);
+        out.put("cassette_denominations", cassetteDenoms);
+        out.put("cassette_remaining_amount_jpy", cassetteAmountRemainingJpy);
+        out.put("cashbox_rows_count", cashBoxes != null ? cashBoxes.size() : 0);
+        out.put("cashbox_names_seen", listCashboxNames(cashBoxes));
+        Map<String, Long> cassetteMaxAmountJpy = new HashMap<>();
+        for (Map.Entry<String, BigDecimal> e : cassetteDenoms.entrySet()) {
+            if (e.getValue() == null) {
+                continue;
+            }
+            BigDecimal max = e.getValue().multiply(BigDecimal.valueOf(cassetteCapacityNotes));
+            cassetteMaxAmountJpy.put(e.getKey(), (Long) amountToJson(max));
+        }
+        out.put("cassette_max_amount_jpy", cassetteMaxAmountJpy);
+        out.put("cashbox_total_count", acceptor.isEmpty() ? null : acceptorTotalCount);
+        return out;
+    }
+
+    private static List<IBanknoteCounts> filterCashboxesByNameContains(List<IBanknoteCounts> items, String token) {
+        if (items == null || items.isEmpty() || token == null || token.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        String t = token.trim().toLowerCase(Locale.ROOT);
+        List<IBanknoteCounts> out = new ArrayList<>();
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            String name = bc.getCashboxName();
+            if (name == null) {
+                continue;
+            }
+            if (name.toLowerCase(Locale.ROOT).contains(t)) {
+                out.add(bc);
+            }
+        }
+        return out;
+    }
+
+    private static List<String> listCashboxNames(List<IBanknoteCounts> items) {
+        if (items == null || items.isEmpty()) {
+            return Collections.emptyList();
+        }
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        for (IBanknoteCounts bc : items) {
+            if (bc == null) {
+                continue;
+            }
+            String name = bc.getCashboxName();
+            if (name != null && !name.trim().isEmpty()) {
+                names.add(name.trim());
+            }
+        }
+        return new ArrayList<>(names);
+    }
+
+    private static String cashStatusLabel(String level) {
+        if (level == null) {
+            return null;
+        }
+        switch (level) {
+            case "OK":
+                return "OK";
+            case "LOW_BALANCE":
+                return "Low Balance";
+            case "SEVERE_LOW_BALANCE":
+                return "Severe low Balance";
+            case "EMPTY":
+                return "Empty";
+            case "UNKNOWN":
+            default:
+                return "Unknown";
+        }
+    }
+
+    /**
+     * Slim JSON view of a single transaction: terminal time, remote id, type, cash + currency,
+     * crypto + currency, destination address, identity, status. {@code _label} fields are derived from
+     * the transaction type to make the response human-readable without an extra lookup.
+     */
+    private static Map<String, Object> transactionToJson(ITransactionDetails tx) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("terminal_time", dateToEpochMillis(tx.getTerminalTime()));
+        row.put("remote_transaction_id", tx.getRemoteTransactionId());
+        row.put("type", tx.getType());
+        row.put("type_label", transactionTypeLabel(tx.getType()));
+        row.put("cash_amount", tx.getCashAmount());
+        row.put("cash_currency", tx.getCashCurrency());
+        row.put("crypto_amount", tx.getCryptoAmount());
+        row.put("crypto_currency", tx.getCryptoCurrency());
+        row.put("destination_address", tx.getCryptoAddress());
+        row.put("identity_public_id", tx.getIdentityPublicId());
+        row.put("status", tx.getStatus());
+        row.put("status_label", transactionStatusLabel(tx.getType(), tx.getStatus()));
+        return row;
+    }
+
+    /**
+     * Accepts epoch millis (e.g. {@code 1735689600000}), ISO-8601 instants ({@code 2025-01-01T00:00:00Z}),
+     * offset/zoned datetimes, naive datetimes (treated as UTC), and bare dates (start of day UTC).
+     */
+    private static Date parseDateParam(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        String s = raw.trim();
+        try {
+            return new Date(Long.parseLong(s));
+        } catch (NumberFormatException ignored) {
+            // not a numeric timestamp; try ISO-8601 forms below
+        }
+        try {
+            return Date.from(Instant.parse(s));
+        } catch (DateTimeParseException ignored) {
+            // try other formats below
+        }
+        try {
+            return Date.from(ZonedDateTime.parse(s).toInstant());
+        } catch (DateTimeParseException ignored) {
+            // try other formats below
+        }
+        try {
+            return Date.from(LocalDateTime.parse(s).atZone(ZoneOffset.UTC).toInstant());
+        } catch (DateTimeParseException ignored) {
+            // try date-only below
+        }
+        try {
+            return Date.from(LocalDate.parse(s).atStartOfDay(ZoneOffset.UTC).toInstant());
+        } catch (DateTimeParseException ignored) {
+            // fall through
+        }
+        throw new IllegalArgumentException(
+                "Invalid date/time value: \"" + raw + "\" (expected ISO-8601 or epoch milliseconds)");
+    }
+
+    private static Integer parseIntegerParam(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String transactionTypeLabel(int type) {
+        switch (type) {
+            case ITransactionDetails.TYPE_BUY_CRYPTO:
+                return "BUY_CRYPTO";
+            case ITransactionDetails.TYPE_SELL_CRYPTO:
+                return "SELL_CRYPTO";
+            case ITransactionDetails.TYPE_WITHDRAW_CASH:
+                return "WITHDRAW_CASH";
+            case ITransactionDetails.TYPE_CASHBACK:
+                return "CASHBACK";
+            case ITransactionDetails.TYPE_ORDER_CRYPTO:
+                return "ORDER_CRYPTO";
+            case ITransactionDetails.TYPE_DEPOSIT_CASH:
+                return "DEPOSIT_CASH";
+            default:
+                return "UNKNOWN";
+        }
+    }
+
+    private static String transactionStatusLabel(int type, int status) {
+        switch (type) {
+            case ITransactionDetails.TYPE_BUY_CRYPTO:
+                switch (status) {
+                    case ITransactionDetails.STATUS_BUY_IN_PROGRESS:
+                        return "IN_PROGRESS";
+                    case ITransactionDetails.STATUS_BUY_COMPLETED:
+                        return "COMPLETED";
+                    case ITransactionDetails.STATUS_BUY_ERROR:
+                        return "ERROR";
+                    case ITransactionDetails.STATUS_BUY_CANCELED:
+                        return "CANCELED";
+                    default:
+                        return "UNKNOWN";
+                }
+            case ITransactionDetails.TYPE_SELL_CRYPTO:
+                switch (status) {
+                    case ITransactionDetails.STATUS_SELL_PAYMENT_REQUESTED:
+                        return "PAYMENT_REQUESTED";
+                    case ITransactionDetails.STATUS_SELL_PAYMENT_ARRIVING:
+                        return "PAYMENT_ARRIVING";
+                    case ITransactionDetails.STATUS_SELL_PAYMENT_ARRIVED:
+                        return "PAYMENT_ARRIVED";
+                    case ITransactionDetails.STATUS_SELL_ERROR:
+                        return "ERROR";
+                    default:
+                        return "UNKNOWN";
+                }
+            case ITransactionDetails.TYPE_WITHDRAW_CASH:
+                switch (status) {
+                    case ITransactionDetails.STATUS_WITHDRAW_IN_PROGRESS:
+                        return "IN_PROGRESS";
+                    case ITransactionDetails.STATUS_WITHDRAW_COMPLETED:
+                        return "COMPLETED";
+                    case ITransactionDetails.STATUS_WITHDRAW_ERROR:
+                        return "ERROR";
+                    default:
+                        return "UNKNOWN";
+                }
+            case ITransactionDetails.TYPE_CASHBACK:
+                switch (status) {
+                    case ITransactionDetails.STATUS_CASHBACK_COMPLETED:
+                        return "COMPLETED";
+                    case ITransactionDetails.STATUS_CASHBACK_ERROR:
+                        return "ERROR";
+                    default:
+                        return "UNKNOWN";
+                }
+            case ITransactionDetails.TYPE_ORDER_CRYPTO:
+                switch (status) {
+                    case ITransactionDetails.STATUS_ORDER_IN_PROGRESS:
+                        return "IN_PROGRESS";
+                    case ITransactionDetails.STATUS_ORDER_CASH_DEPOSITED:
+                        return "CASH_DEPOSITED";
+                    case ITransactionDetails.STATUS_ORDER_COMPLETED:
+                        return "COMPLETED";
+                    case ITransactionDetails.STATUS_ORDER_ERROR:
+                        return "ERROR";
+                    default:
+                        return "UNKNOWN";
+                }
+            case ITransactionDetails.TYPE_DEPOSIT_CASH:
+                switch (status) {
+                    case ITransactionDetails.STATUS_DEPOSIT_COMPLETED:
+                        return "COMPLETED";
+                    case ITransactionDetails.STATUS_DEPOSIT_ERROR:
+                        return "ERROR";
+                    default:
+                        return "UNKNOWN";
+                }
+            default:
+                return "UNKNOWN";
+        }
     }
 
     /**
