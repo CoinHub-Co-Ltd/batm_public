@@ -2502,7 +2502,7 @@
             <cryptocurrency>SHIB</cryptocurrency>
             <help>USD is default fiat currency.</help>
         </ratesource>
-        <exchange prefix="coinhubeokjp" name="CoinHubEOKJP">
+        <exchange prefix="coinhubjp" name="CoinHub-JP">
             <param name="key"/>
             <param name="privatekey"/>
             <param name="fiatcurrency"/>

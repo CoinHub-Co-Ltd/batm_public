@@ -1,0 +1,1 @@
+Cashback — {amount} {currency} ({terminal})

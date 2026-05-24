@@ -20,10 +20,13 @@ package com.generalbytes.batm.server.extensions.extra.ryocoin.sources;
 
 import java.math.BigDecimal;
 
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.TransactionFeesRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.RateResponse;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.TransactionFeesResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.WalletBalanceResponse;
 
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.HeaderParam;
@@ -32,24 +35,33 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.core.MediaType;
 
 
-@Path("/v1/api")
+@Path("/v2/api")
 public interface ICoinHubAPI {
 
     @GET
-    @Path("/rate/buy/{crypto_currency}/{fiat_currency}/")
+    @Path("market/rate/buy/{cryptoCurrency}/{fiatCurrency}/")
     RateResponse getBuyRate(
         @HeaderParam("X-API-SECRET") String apiKey,
-        @PathParam("crypto_currency") String cryptoCurrency,
-        @PathParam("fiat_currency") String fiatCurrency);
+        @PathParam("cryptoCurrency") String cryptoCurrency,
+        @PathParam("fiatCurrency") String fiatCurrency);
 
     @GET
-    @Path("/rate/sell/{crypto_currency}/{fiat_currency}/")
+    @Path("market/rate/sell/{cryptoCurrency}/{fiatCurrency}/")
     RateResponse getSellRate(
         @HeaderParam("X-API-SECRET") String apiKey,
-        @PathParam("crypto_currency") String cryptoCurrency,
-        @PathParam("fiat_currency") String fiatCurrency);
+        @PathParam("cryptoCurrency") String cryptoCurrency,
+        @PathParam("fiatCurrency") String fiatCurrency);
 
     @GET
-    @Path("/wallet/balance/{crypto_currency}/{address}")
-    WalletBalanceResponse getWalletBalance(@PathParam("crypto_currency") String cryptoCurrency, @PathParam("address") String address);
+    @Path("paperwallet/wallet/{address}/{cryptoCurrency}/balance")
+    WalletBalanceResponse getWalletBalance(
+        @HeaderParam("X-API-SECRET") String apiKey,
+        @PathParam("address") String address,
+        @PathParam("cryptoCurrency") String cryptoCurrency);
+
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("/service/transaction/fees")
+    TransactionFeesResponse getTransactionFees(@HeaderParam("X-API-SECRET") String apiKey, TransactionFeesRequest request);
 }

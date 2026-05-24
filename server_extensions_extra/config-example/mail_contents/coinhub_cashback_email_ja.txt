@@ -1,0 +1,10 @@
+キャッシュバックのご利用準備ができました。
+
+端末: {terminal}
+金額: {amount} {currency}
+端末では、おおよそ {validity_minutes} 分以内に QR コードをご利用ください。
+
+添付画像（cashback-qr.png）が受取用の QR コードです。
+
+参照文字列:
+{qr_payload}

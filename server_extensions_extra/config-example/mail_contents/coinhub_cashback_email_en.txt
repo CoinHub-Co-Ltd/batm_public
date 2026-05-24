@@ -1,0 +1,20 @@
+{logo} CASHBACK RECEIPT AND REDEEM TICKET
+
+TX ID: {transaction_id}
+Time: {time}
+{qr_payload}
+
+How to proceed:
+1. Choose REDEEM TICKET on the ATM
+2. Scan the QR code on this ticket.
+
+DON'T LOSE THIS REDEEM TICKET!!
+TICKET IS NEEDED FOR CASH WITHDRAWAL!!
+
+----
+Operator:
+CoinHub Co.,Ltd
+Higashi-Nihonbashi EX Building
+1F 4-18,3 Chome, Higashi-Nihonbashi,
+Chou-ku, Tokyo 103-0004
+03-6666-9037
