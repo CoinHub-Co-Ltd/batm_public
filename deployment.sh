@@ -29,15 +29,16 @@ sudo bash << 'INNER'
 set -e
 
 echo "Renaming extension..."
-mv /home/cas/batm_server_extensions_extra.jar /home/cas/server_extensions_extra-1.16.13.jar
+mv /home/cas/batm_server_extensions_extra.jar /home/cas/server_extensions_extra-1.18.1.jar
+mv /home/cas/currencies-1.17.6.jar /home/cas/currencies-1.18.1.jar
 
 echo "Backing up old files..."
-cp /batm/app/master/extensions/server_extensions_extra-1.16.13.jar /batm/app/master/extensions/server_extensions_extra-1.16.13.jar.bak || true
-cp /batm/app/master/lib/currencies-1.17.6.jar /batm/app/master/lib/currencies-1.17.6.jar.bak || true
+cp /batm/app/master/extensions/server_extensions_extra-1.18.1.jar /batm/app/master/extensions/server_extensions_extra-1.18.1.jar.bak || true
+cp /batm/app/master/lib/currencies-1.18.1.jar /batm/app/master/lib/currencies-1.18.1.jar.bak || true
 
 echo "Moving new files..."
-mv /home/cas/server_extensions_extra-1.16.13.jar /batm/app/master/extensions/
-mv /home/cas/currencies-1.17.6.jar /batm/app/master/lib/
+mv /home/cas/server_extensions_extra-1.18.1.jar /batm/app/master/extensions/
+mv /home/cas/currencies-1.18.1.jar /batm/app/master/lib/
 
 echo "Restarting BATM..."
 cd /batm
