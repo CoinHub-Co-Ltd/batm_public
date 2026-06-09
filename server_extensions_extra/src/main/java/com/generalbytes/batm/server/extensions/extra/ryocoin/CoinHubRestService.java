@@ -120,6 +120,14 @@ public class CoinHubRestService implements IRestService {
     private static final Logger log = LoggerFactory.getLogger(CoinHubRestService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    private static final String SLOT_C4 = "C4";
+    private static final int DISPENSER_UI_SLOT_COUNT = 3;
+    private static final int CASSETTE_CAPACITY_NOTES = 500;
+    private static final int CASSETTE_NEAR_END_THRESHOLD_NOTES = 20;
+    private static final int CASSETTE_SEVERE_LOW_THRESHOLD_NOTES = 10;
+    private static final int CASHBOX_CAPACITY_NOTES = 1200;
+    private static final int CASHBOX_NEAR_FULL_THRESHOLD_NOTES = 1000;
+
     @Override
     public String getPrefixPath() {
         return "coinhub";
@@ -377,7 +385,8 @@ public class CoinHubRestService implements IRestService {
 
     /**
      * Returns cassette summaries (per {@code dispenser_cassette_*}: {@code denomination}, {@code total_remaining_count},
-     * {@code total_remaining_amount}) and acceptor {@code cashbox_summary} with fixed JPY slots ¥1000 / ¥5000 / ¥10,000.
+     * {@code total_remaining_amount}), acceptor {@code cashbox_summary}, and unified {@code slot_summary} for
+     * {@code C1}–{@code C3} (dispenser cassettes) plus {@code C4} (acceptor cashbox).
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/atm?serial_number=BT401469}
@@ -425,6 +434,7 @@ public class CoinHubRestService implements IRestService {
                 cashboxSummary = Collections.singletonList(emptyAcceptorCashboxSummary(fallbackDenoms));
             }
             body.put("cashbox_summary", cashboxSummary);
+            body.put("slot_summary", buildSlotSummaries(cassettes, acceptorCashbox, fallbackDenoms));
         } catch (IllegalArgumentException e) {
             body.put("ok", false);
             body.put("error", "invalid_parameters");
@@ -471,8 +481,9 @@ public class CoinHubRestService implements IRestService {
     }
 
     /**
-     * Returns cassette + acceptor cashbox summaries for active, non-deleted terminals, plus {@code company}
-     * (organization name) and {@code printer_status} (from terminal hardware error flags).
+     * Returns cassette + acceptor cashbox summaries and {@code slot_summary} ({@code C1}–{@code C4}) for active,
+     * non-deleted terminals, plus {@code company} (organization name) and {@code printer_status}
+     * (from terminal hardware error flags).
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/atm/all}
@@ -517,6 +528,7 @@ public class CoinHubRestService implements IRestService {
                     cashboxSummary = Collections.singletonList(emptyAcceptorCashboxSummary(fallbackDenoms));
                 }
                 row.put("cashbox_summary", cashboxSummary);
+                row.put("slot_summary", buildSlotSummaries(cassettes, acceptorCashbox, fallbackDenoms));
                 row.put("ok", true);
             } catch (IllegalArgumentException e) {
                 row.put("ok", false);
@@ -588,17 +600,26 @@ public class CoinHubRestService implements IRestService {
 
             try {
                 List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
+                List<IBanknoteCounts> cassettes = filterByCashboxNamePrefix(cashBoxes, "dispenser_cassette_");
+                if (cassettes.isEmpty()) {
+                    cassettes = filterCashboxesByNameContains(cashBoxes, "cassette");
+                }
+                List<IBanknoteCounts> acceptorCashbox = filterAcceptorCashboxRows(cashBoxes);
+                TreeSet<BigDecimal> fallbackDenoms = collectJpyDenominationsSorted(cassettes);
                 row.put("cash_status", cashStatusFromCashBoxes(cashBoxes));
+                row.put("slot_summary", buildSlotSummaries(cassettes, acceptorCashbox, fallbackDenoms));
                 row.put("ok", true);
             } catch (IllegalArgumentException e) {
                 row.put("ok", true);
                 row.put("cash_status", null);
+                row.put("slot_summary", null);
                 row.put("cash_status_warning", "unavailable");
                 row.put("cash_status_detail", e.getMessage());
             } catch (Throwable e) {
                 log.error("terminal/all/details cash status failed: {}", sn, e);
                 row.put("ok", true);
                 row.put("cash_status", null);
+                row.put("slot_summary", null);
                 row.put("cash_status_warning", "unexpected");
                 row.put("cash_status_detail", e.getMessage());
             }
@@ -1147,16 +1168,164 @@ public class CoinHubRestService implements IRestService {
      *     <li>{@code LOW_BALANCE}: total notes &lt; 20 (near-end threshold)</li>
      * </ul>
      *
-     * <p>Overall is the worst level across all cassettes. If there is no cassette data, overall is {@code UNKNOWN}.</p>
+     * <p>Overall is the worst level across dispenser cassettes. If there is no cassette data, overall is
+     * {@code UNKNOWN}. {@code slot_levels} and {@code cassette_levels} include {@code C4} for the acceptor cashbox
+     * (full/near-full scale); {@code C1}–{@code C3} use the dispenser low-balance scale.</p>
      */
-    private static Map<String, Object> cashStatusFromCashBoxes(List<IBanknoteCounts> cashBoxes) {
-        // Technical parameters
-        final int cassetteCapacityNotes = 500;
-        final int cassetteNearEndThresholdNotes = 20;
-        final int cassetteSevereLowThresholdNotes = 10; // not provided; chosen as half of near-end
+    private static String slotIdForDispenserIndex(int index) {
+        return "C" + index;
+    }
 
-        final int cashboxCapacityNotes = 1200;
-        final int cashboxNearFullThresholdNotes = 1000;
+    private static String dispenserCashboxNameForIndex(int index) {
+        switch (index) {
+            case 1:
+                return IBanknoteCounts.CN_DISPENSER_CASSETTE_1;
+            case 2:
+                return IBanknoteCounts.CN_DISPENSER_CASSETTE_2;
+            case 3:
+                return IBanknoteCounts.CN_DISPENSER_CASSETTE_3;
+            default:
+                throw new IllegalArgumentException("invalid dispenser slot index: " + index);
+        }
+    }
+
+    private static String dispenserLevelFromNoteCount(int total) {
+        if (total == 0) {
+            return "EMPTY";
+        }
+        if (total < CASSETTE_SEVERE_LOW_THRESHOLD_NOTES) {
+            return "SEVERE_LOW_BALANCE";
+        }
+        if (total < CASSETTE_NEAR_END_THRESHOLD_NOTES) {
+            return "LOW_BALANCE";
+        }
+        return "OK";
+    }
+
+    private static String acceptorLevelFromNoteCount(int total, boolean hasAcceptorData) {
+        if (!hasAcceptorData) {
+            return "UNKNOWN";
+        }
+        if (total == 0) {
+            return "EMPTY";
+        }
+        if (total >= CASHBOX_CAPACITY_NOTES) {
+            return "FULL";
+        }
+        if (total >= CASHBOX_NEAR_FULL_THRESHOLD_NOTES) {
+            return "NEAR_FULL";
+        }
+        return "OK";
+    }
+
+    private static String acceptorStatusLabel(String level) {
+        if (level == null) {
+            return null;
+        }
+        switch (level) {
+            case "OK":
+                return "OK";
+            case "NEAR_FULL":
+                return "Near Full";
+            case "FULL":
+                return "Full";
+            case "EMPTY":
+                return "Empty";
+            case "UNKNOWN":
+            default:
+                return "Unknown";
+        }
+    }
+
+    private static Map<String, Integer> aggregateNoteCountsByCashboxName(List<IBanknoteCounts> items) {
+        Map<String, Integer> totals = new HashMap<>();
+        for (IBanknoteCounts bc : safeList(items)) {
+            if (bc == null || bc.getCashboxName() == null) {
+                continue;
+            }
+            totals.merge(bc.getCashboxName(), bc.getCount(), Integer::sum);
+        }
+        return totals;
+    }
+
+    private static Map<String, BigDecimal> aggregateJpyAmountsByCashboxName(List<IBanknoteCounts> items) {
+        Map<String, BigDecimal> amounts = new HashMap<>();
+        for (IBanknoteCounts bc : safeList(items)) {
+            if (bc == null || bc.getCashboxName() == null) {
+                continue;
+            }
+            String currency = bc.getCurrency();
+            boolean jpy = currency == null || "JPY".equalsIgnoreCase(currency);
+            BigDecimal denom = bc.getDenomination();
+            if (!jpy || denom == null) {
+                continue;
+            }
+            BigDecimal lineAmount = denom.stripTrailingZeros().multiply(BigDecimal.valueOf(bc.getCount()));
+            amounts.merge(bc.getCashboxName(), lineAmount, BigDecimal::add);
+        }
+        return amounts;
+    }
+
+    /**
+     * Unified C1–C3 dispenser slots plus C4 acceptor cashbox for ATM list/detail endpoints.
+     */
+    private static List<Map<String, Object>> buildSlotSummaries(
+            List<IBanknoteCounts> cassettes,
+            List<IBanknoteCounts> acceptor,
+            TreeSet<BigDecimal> fallbackDenoms) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        Map<String, Integer> cassetteTotals = aggregateNoteCountsByCashboxName(cassettes);
+        Map<String, BigDecimal> cassetteAmountsJpy = aggregateJpyAmountsByCashboxName(cassettes);
+
+        for (int i = 1; i <= DISPENSER_UI_SLOT_COUNT; i++) {
+            String slot = slotIdForDispenserIndex(i);
+            String cashboxName = dispenserCashboxNameForIndex(i);
+            boolean hasData = cassetteTotals.containsKey(cashboxName);
+            int total = cassetteTotals.getOrDefault(cashboxName, 0);
+            String status = hasData ? dispenserLevelFromNoteCount(total) : "UNKNOWN";
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("slot", slot);
+            row.put("cashbox_name", cashboxName);
+            row.put("cashbox_type", "dispenser");
+            row.put("status", status);
+            row.put("status_label", cashStatusLabel(status));
+            row.put("total_remaining_count", hasData ? total : null);
+            row.put("total_remaining_amount", hasData ? amountToJson(cassetteAmountsJpy.getOrDefault(cashboxName, BigDecimal.ZERO)) : null);
+            out.add(row);
+        }
+
+        List<Map<String, Object>> acceptorSummaryRows = summarizeAcceptorCashboxJpyFlat(acceptor, fallbackDenoms);
+        Map<String, Object> acceptorSummary = acceptorSummaryRows.isEmpty()
+                ? emptyAcceptorCashboxSummary(fallbackDenoms)
+                : acceptorSummaryRows.get(0);
+        int acceptorTotal = acceptorSummary.get("total_count") instanceof Number
+                ? ((Number) acceptorSummary.get("total_count")).intValue()
+                : 0;
+        boolean hasAcceptorData = acceptor != null && !acceptor.isEmpty();
+        String acceptorStatus = acceptorLevelFromNoteCount(acceptorTotal, hasAcceptorData);
+
+        Map<String, Object> c4 = new LinkedHashMap<>();
+        c4.put("slot", SLOT_C4);
+        c4.put("cashbox_name", IBanknoteCounts.CN_ACCEPTOR_CASHBOX);
+        c4.put("cashbox_type", "acceptor");
+        c4.put("status", acceptorStatus);
+        c4.put("status_label", acceptorStatusLabel(acceptorStatus));
+        c4.put("total_remaining_count", hasAcceptorData ? acceptorTotal : null);
+        c4.put("total_remaining_amount", acceptorSummary.get("total_value"));
+        for (int slot = 1; slot <= 3; slot++) {
+            String denomKey = "banknote_" + slot + "_denomication";
+            String countKey = "banknote_" + slot + "_count";
+            String valueKey = "banknote_" + slot + "_value";
+            c4.put(denomKey, acceptorSummary.get(denomKey));
+            c4.put(countKey, acceptorSummary.get(countKey));
+            c4.put(valueKey, acceptorSummary.get(valueKey));
+        }
+        out.add(c4);
+        return out;
+    }
+
+    private static Map<String, Object> cashStatusFromCashBoxes(List<IBanknoteCounts> cashBoxes) {
         final int cashboxRejectFullThresholdNotes = 30;
 
         // Prefer canonical CAS naming, but fall back to any cashbox containing "cassette"
@@ -1196,29 +1365,20 @@ public class CoinHubRestService implements IRestService {
             int total = e.getValue() != null ? e.getValue() : 0;
             if (total == 0) {
                 emptyCassettes++;
-            } else if (total < cassetteSevereLowThresholdNotes) {
+            } else if (total < CASSETTE_SEVERE_LOW_THRESHOLD_NOTES) {
                 severeLowCassettes++;
-            } else if (total < cassetteNearEndThresholdNotes) {
+            } else if (total < CASSETTE_NEAR_END_THRESHOLD_NOTES) {
                 lowCassettes++;
             }
         }
 
-        // Per-cassette level (for C1/C2/C3 UI)
+        // Per-cassette level (for C1/C2/C3 UI) plus C4 acceptor cashbox
         Map<String, String> cassetteLevels = new LinkedHashMap<>();
         Map<String, String> cassetteLevelLabels = new LinkedHashMap<>();
         TreeSet<String> cassetteNamesSorted = new TreeSet<>(cassetteTotals.keySet());
         for (String name : cassetteNamesSorted) {
             int total = cassetteTotals.getOrDefault(name, 0);
-            String level;
-            if (total == 0) {
-                level = "EMPTY";
-            } else if (total < cassetteSevereLowThresholdNotes) {
-                level = "SEVERE_LOW_BALANCE";
-            } else if (total < cassetteNearEndThresholdNotes) {
-                level = "LOW_BALANCE";
-            } else {
-                level = "OK";
-            }
+            String level = dispenserLevelFromNoteCount(total);
             cassetteLevels.put(name, level);
             cassetteLevelLabels.put(name, cashStatusLabel(level));
         }
@@ -1243,18 +1403,26 @@ public class CoinHubRestService implements IRestService {
             }
             acceptorTotalCount += bc.getCount();
         }
-        String cashboxStatus;
-        if (acceptor.isEmpty()) {
-            cashboxStatus = "UNKNOWN";
-        } else if (acceptorTotalCount == 0) {
-            cashboxStatus = "EMPTY";
-        } else if (acceptorTotalCount >= cashboxCapacityNotes) {
-            cashboxStatus = "FULL";
-        } else if (acceptorTotalCount >= cashboxNearFullThresholdNotes) {
-            cashboxStatus = "NEAR_FULL";
-        } else {
-            cashboxStatus = "OK";
+        String cashboxStatus = acceptorLevelFromNoteCount(acceptorTotalCount, !acceptor.isEmpty());
+
+        cassetteLevels.put(SLOT_C4, cashboxStatus);
+        cassetteLevelLabels.put(SLOT_C4, acceptorStatusLabel(cashboxStatus));
+
+        Map<String, String> slotLevels = new LinkedHashMap<>();
+        Map<String, String> slotLevelLabels = new LinkedHashMap<>();
+        Map<String, Integer> slotNoteCounts = new LinkedHashMap<>();
+        for (int i = 1; i <= DISPENSER_UI_SLOT_COUNT; i++) {
+            String slot = slotIdForDispenserIndex(i);
+            String cashboxName = dispenserCashboxNameForIndex(i);
+            boolean hasData = cassetteTotals.containsKey(cashboxName);
+            String level = hasData ? dispenserLevelFromNoteCount(cassetteTotals.getOrDefault(cashboxName, 0)) : "UNKNOWN";
+            slotLevels.put(slot, level);
+            slotLevelLabels.put(slot, hasData ? cashStatusLabel(level) : cashStatusLabel("UNKNOWN"));
+            slotNoteCounts.put(slot, hasData ? cassetteTotals.get(cashboxName) : null);
         }
+        slotLevels.put(SLOT_C4, cashboxStatus);
+        slotLevelLabels.put(SLOT_C4, acceptorStatusLabel(cashboxStatus));
+        slotNoteCounts.put(SLOT_C4, acceptor.isEmpty() ? null : acceptorTotalCount);
 
         String overall = cassettesStatus;
 
@@ -1263,17 +1431,20 @@ public class CoinHubRestService implements IRestService {
         out.put("overall_label", cashStatusLabel(overall));
         out.put("cassettes", cassettesStatus);
         out.put("cashbox", cashboxStatus);
-        out.put("cassette_capacity_notes", cassetteCapacityNotes);
-        out.put("cassette_near_end_threshold_notes", cassetteNearEndThresholdNotes);
-        out.put("cassette_severe_low_threshold_notes", cassetteSevereLowThresholdNotes);
-        out.put("cashbox_capacity_notes", cashboxCapacityNotes);
-        out.put("cashbox_near_full_threshold_notes", cashboxNearFullThresholdNotes);
+        out.put("cassette_capacity_notes", CASSETTE_CAPACITY_NOTES);
+        out.put("cassette_near_end_threshold_notes", CASSETTE_NEAR_END_THRESHOLD_NOTES);
+        out.put("cassette_severe_low_threshold_notes", CASSETTE_SEVERE_LOW_THRESHOLD_NOTES);
+        out.put("cashbox_capacity_notes", CASHBOX_CAPACITY_NOTES);
+        out.put("cashbox_near_full_threshold_notes", CASHBOX_NEAR_FULL_THRESHOLD_NOTES);
         out.put("cashbox_reject_full_threshold_notes", cashboxRejectFullThresholdNotes);
         out.put("cassettes_empty_count", emptyCassettes);
         out.put("cassettes_severe_low_count", severeLowCassettes);
         out.put("cassettes_low_count", lowCassettes);
         out.put("cassette_levels", cassetteLevels);
         out.put("cassette_level_labels", cassetteLevelLabels);
+        out.put("slot_levels", slotLevels);
+        out.put("slot_level_labels", slotLevelLabels);
+        out.put("slot_note_counts", slotNoteCounts);
         out.put("cassette_note_counts", cassetteTotals);
         out.put("cassette_denominations", cassetteDenoms);
         out.put("cassette_remaining_amount_jpy", cassetteAmountRemainingJpy);
@@ -1284,7 +1455,7 @@ public class CoinHubRestService implements IRestService {
             if (e.getValue() == null) {
                 continue;
             }
-            BigDecimal max = e.getValue().multiply(BigDecimal.valueOf(cassetteCapacityNotes));
+            BigDecimal max = e.getValue().multiply(BigDecimal.valueOf(CASSETTE_CAPACITY_NOTES));
             cassetteMaxAmountJpy.put(e.getKey(), (Long) amountToJson(max));
         }
         out.put("cassette_max_amount_jpy", cassetteMaxAmountJpy);
