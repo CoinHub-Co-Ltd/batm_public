@@ -103,8 +103,8 @@ import javax.ws.rs.core.UriInfo;
  * {@code mail_contents/coinhub_cashback_email_&lt;lang&gt;.txt} (plain-text fallback).
  * Subject: {@code coinhub_cashback_subject_&lt;lang&gt;.txt} (single line; line breaks are flattened).
  * Pass {@code language} on the cashback request (e.g. {@code ja} or {@code ja-JP}). Placeholders:
- * {@code {terminal}}, {@code {amount}}, {@code {currency}}, {@code {validity_minutes}}, {@code {qr_payload}},
- * {@code {transaction_id}}, {@code {time}}, {@code {logo}} (text), plus for HTML
+ * {@code {terminal}}, {@code {amount}}, {@code {currency}}, {@code {address}}, {@code {validity_minutes}},
+ * {@code {qr_payload}}, {@code {transaction_id}}, {@code {time}}, {@code {logo}} (text), plus for HTML
  * {@code {logo_html}} and {@code {logo_url}}. Configure {@code coinhub.cashback_logo_url} for the logo image URL.
  * Lookup order: requested tag, then primary subtag (e.g. {@code ja-JP} → {@code ja}). {@code en.txt} is tried only
  * when the language is English ({@code en}, {@code en-GB}, …), so {@code language=ja} does not pick up
@@ -1790,6 +1790,7 @@ public class CoinHubRestService implements IRestService {
                 responseBody.put("email_subject_template", template.loadedFromPath);
             }
             return applyCashbackEmailTemplate(
+                    ctx,
                     normalizeSingleLineForEmailSubject(template.content),
                     terminalSerial,
                     cashback,
@@ -1818,7 +1819,7 @@ public class CoinHubRestService implements IRestService {
             if (responseBody != null) {
                 responseBody.put("email_body_template", template.loadedFromPath);
             }
-            return applyCashbackEmailTemplate(template.content, terminalSerial, cashback, qrPayload);
+            return applyCashbackEmailTemplate(ctx, template.content, terminalSerial, cashback, qrPayload);
         }
         if (responseBody != null) {
             responseBody.put("email_body_template", "default");
@@ -1845,7 +1846,8 @@ public class CoinHubRestService implements IRestService {
             if (responseBody != null) {
                 responseBody.put("email_body_template_html", template.loadedFromPath);
             }
-            return applyCashbackEmailTemplateHtml(template.content, terminalSerial, cashback, qrPayload, logoUrl);
+            return applyCashbackEmailTemplateHtml(
+                    ctx, template.content, terminalSerial, cashback, qrPayload, logoUrl);
         }
         if (responseBody != null) {
             responseBody.put("email_body_template_html", "missing");
@@ -1941,6 +1943,7 @@ public class CoinHubRestService implements IRestService {
     }
 
     private static String applyCashbackEmailTemplate(
+            IExtensionContext ctx,
             String template,
             String terminalSerial,
             ITransactionCashbackInfo cashback,
@@ -1951,6 +1954,7 @@ public class CoinHubRestService implements IRestService {
                 .replace("{terminal}", terminalSerial)
                 .replace("{amount}", cashback.getCashAmount().toPlainString())
                 .replace("{currency}", cashback.getCashCurrency())
+                .replace("{address}", resolveTerminalLocationAddress(ctx, terminalSerial))
                 .replace("{validity_minutes}", Long.toString(validity))
                 .replace("{transaction_id}", Objects.toString(cashback.getRemoteTransactionId(), ""))
                 .replace("{time}", time)
@@ -1959,15 +1963,33 @@ public class CoinHubRestService implements IRestService {
     }
 
     private static String applyCashbackEmailTemplateHtml(
+            IExtensionContext ctx,
             String template,
             String terminalSerial,
             ITransactionCashbackInfo cashback,
             String qrPayload,
             String logoUrl) {
         String logoHtml = buildLogoHtml(logoUrl);
-        return applyCashbackEmailTemplate(template, terminalSerial, cashback, qrPayload)
+        return applyCashbackEmailTemplate(ctx, template, terminalSerial, cashback, qrPayload)
                 .replace("{logo_url}", logoUrl != null ? logoUrl : "")
                 .replace("{logo_html}", logoHtml);
+    }
+
+    private static String resolveTerminalLocationAddress(IExtensionContext ctx, String terminalSerial) {
+        try {
+            ITerminal terminal = ctx.findTerminalBySerialNumber(terminalSerial);
+            if (terminal == null) {
+                return "";
+            }
+            ILocation location = terminal.getLocation();
+            if (location == null) {
+                return "";
+            }
+            return Objects.toString(location.getContactAddress(), "").trim();
+        } catch (Exception e) {
+            log.warn("cashback email: could not resolve terminal address for {}", terminalSerial, e);
+            return "";
+        }
     }
 
     private static String buildLogoHtml(String logoUrl) {

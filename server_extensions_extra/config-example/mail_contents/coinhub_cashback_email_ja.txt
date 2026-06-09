@@ -1,10 +1,13 @@
-キャッシュバックのご利用準備ができました。
+{logo} キャッシュバック受領書および引き換えチケット
 
-端末: {terminal}
+取引ID: {transaction_id}
+日時: {time}
 金額: {amount} {currency}
-端末では、おおよそ {validity_minutes} 分以内に QR コードをご利用ください。
 
-添付画像（cashback-qr.png）が受取用の QR コードです。
+ご利用手順:
+1. ATM の設置場所へお越しください - {address}
+2. ATM で REDEEM TICKET を選択してください
+3. 本チケットの QR コードをスキャンしてください
 
-参照文字列:
-{qr_payload}
+この引き換えチケットを紛失しないでください!!
+現金のお引き出しには本チケットが必要です!!
