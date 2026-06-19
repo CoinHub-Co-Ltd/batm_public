@@ -6,6 +6,7 @@ import java.util.UUID;
 
 public class PlaceOrderRequest {
     public String client_oid;
+    public String order_id;
     public String type;
     public OrderSide side;
     public String instrument_id;

@@ -6,9 +6,9 @@ public class WithdrawalRequest {
     public String crypto;
     public BigDecimal amount;
     public String destination;
-    /** API expects "recipient" (note: historical misspelling kept for compatibility). */
+    public String order_id;
+    public String source;
     public String recipient;
-    /** @deprecated Typo: kept so older servers/clients that expect it still work. */
     @Deprecated
     public String recepient;
     public String trade_pwd;
