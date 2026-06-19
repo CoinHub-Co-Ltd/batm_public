@@ -99,6 +99,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
     private String terminalSerialNumber;
     private String apiKey;
     private String secretKey;
+    private String btcWithdrawalSource = CoinHubFeeConfig.DEFAULT_BTC_WITHDRAWAL_SOURCE;
 
     private ITransactionDetails currentTransaction;
 
@@ -135,6 +136,19 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
 
     public void setExtensionContext(IExtensionContext extensionContext) {
         this.extensionContext = extensionContext;
+        if (extensionContext != null) {
+            this.btcWithdrawalSource = new CoinHubFeeConfig(extensionContext).getBtcWithdrawalSource();
+        }
+    }
+
+    public void setBtcWithdrawalSource(String btcWithdrawalSource) {
+        if (btcWithdrawalSource != null && !btcWithdrawalSource.trim().isEmpty()) {
+            this.btcWithdrawalSource = btcWithdrawalSource.trim().toLowerCase();
+        }
+    }
+
+    public String getBtcWithdrawalSource() {
+        return btcWithdrawalSource;
     }
 
     // private BigDecimal getAmount(ITransactionDetails td) {
@@ -364,6 +378,11 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
             request.recepient = destinationAddress;
             request.trade_pwd = "";
             request.reason = "1"; // sending to external wallet
+            String remoteTransactionId = (description != null) ? description.trim() : null;
+            if (remoteTransactionId != null && !remoteTransactionId.isEmpty()) {
+                request.order_id = remoteTransactionId;
+            }
+            request.source = btcWithdrawalSource;
             Withdrawal response = api.withdraw(apiKey, request);
             
             if (response == null) {
@@ -464,7 +483,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
         log.info("Creating purchase task - cryptoAmount: {} {}, fiatAmount: {} {}, marketSymbol: {}, notional: {},  fiatAmount: {}", 
                 cryptoAmount, cryptoCurrency, fiatAmount != null ? fiatAmount + " " + fiatCurrency : "N/A", marketSymbol, notional, fiatAmount);
         
-        return new OrderCoinsTask(client_oid, OrderSide.BUY, marketSymbol, type, price, cryptoAmount, notional, order_type, fiatAmount);
+        return new OrderCoinsTask(client_oid, OrderSide.BUY, marketSymbol, type, price, cryptoAmount, notional, order_type, fiatAmount, remoteTransactionId);
     }
 
 
@@ -521,7 +540,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
             price = new BigDecimal("0.1");
         }
         String order_type = "3";
-        return new OrderCoinsTask(client_oid,OrderSide.SELL,marketSymbol,type,price,BigDecimal.ZERO,amount,order_type, fiatAmount);
+        return new OrderCoinsTask(client_oid,OrderSide.SELL,marketSymbol,type,price,BigDecimal.ZERO,amount,order_type, fiatAmount, remoteTransactionId);
     }
 
     private BigDecimal getRateSourceCryptoVolume(String cryptoCurrency) {
@@ -649,11 +668,12 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
         private final BigDecimal notional;
         private final String order_type;
         private final BigDecimal fiatAmount;
+        private final String casOrderId;
         private String orderId;
         private String result;
         private boolean finished;
 
-        OrderCoinsTask(UUID client_oid, OrderSide side, String instrument_id, String type, BigDecimal price, BigDecimal size, BigDecimal notional, String order_type, BigDecimal fiatAmount) {
+        OrderCoinsTask(UUID client_oid, OrderSide side, String instrument_id, String type, BigDecimal price, BigDecimal size, BigDecimal notional, String order_type, BigDecimal fiatAmount, String casOrderId) {
             this.client_oid = client_oid;
             this.side = side;
             this.instrument_id = instrument_id;
@@ -663,6 +683,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
             this.notional = notional;
             this.fiatAmount = fiatAmount;
             this.order_type = order_type;
+            this.casOrderId = casOrderId;
             this.checkTillTime = System.currentTimeMillis() + MAXIMUM_TIME_TO_WAIT_FOR_ORDER_TO_FINISH;
         }
 
@@ -696,6 +717,9 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
                 request.instrument_id = instrument_id;
                 request.order_type = order_type;
                 request.fiat_amount = fiatAmount;
+                if (casOrderId != null && !casOrderId.trim().isEmpty()) {
+                    request.order_id = casOrderId.trim();
+                }
                 
                 if (request instanceof MarketOrderRequest) {
                     MarketOrderRequest marketRequest = (MarketOrderRequest) request;

@@ -44,19 +44,25 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
     
     private static final BigDecimal FIXED_FEE_BTC = new BigDecimal("0.00018"); 
     private static final BigDecimal MIN_CRYPTO_AMOUNT = new BigDecimal("0.00000001");
-    /** Default CoinHub platform fee percent when fees API does not return {@code ch_fee}. */
-    private static final BigDecimal DEFAULT_MARKUP_COINHUB_FEE_PERCENT = new BigDecimal("10");
-    /** CAS buffer percent applied on top of CoinHub % and trade fee (compound). */
-    private static final BigDecimal MARKUP_CAS_BUFFER_PERCENT = new BigDecimal("0.70");
     
     private IExtensionContext ctx;
     private ICoinHubJPAPI apiClient;
     private String apiKey;
+    private final CoinHubFeeConfig feeConfig;
 
     public CoinHubJPFeeTransactionListener(IExtensionContext ctx, String apiKey, String apiEndpoint) {
+        this(ctx, apiKey, apiEndpoint, null);
+    }
+
+    public CoinHubJPFeeTransactionListener(IExtensionContext ctx, String apiKey, String apiEndpoint, String btcWithdrawalSource) {
         this.ctx = ctx;
         this.apiKey = apiKey;
+        this.feeConfig = new CoinHubFeeConfig(ctx);
         initializeApiClient(apiEndpoint);
+    }
+
+    private String btcWithdrawalSource() {
+        return feeConfig.getBtcWithdrawalSource();
     }
     
     private void initializeApiClient(String apiEndpoint) {
@@ -363,9 +369,10 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         populateDerivedPricing(request, transactionDetails);
         populateConfiguredProfitPercents(request, transactionDetails);
         populateCoinHubMarkupPayload(request, transactionDetails);
+        populateWithdrawalFinancialFields(request, transactionDetails);
 
-        log.info("[SEIKI] Built transaction request: orderId={}, instrumentId={}, cashAmount={}, cryptoAmount={}, fixedFee={}, feeDiscount={}, expectedProfit={}, rateSource={}, effectiveRate={}, eventType={}",
-            request.order_id, request.instrument_id, request.cash_amount, request.crypto_amount, request.fixed_fee, request.fee_discount, request.expected_profit, request.rate_source_price, request.customer_effective_rate, eventType);
+        log.info("[SEIKI] Built transaction request: orderId={}, instrumentId={}, cashAmount={}, cryptoAmount={}, fixedFee={}, feeDiscount={}, expectedProfit={}, rateSource={}, effectiveRate={}, liquidityType={}, tradingJpy={}, eventType={}",
+            request.order_id, request.instrument_id, request.cash_amount, request.crypto_amount, request.fixed_fee, request.fee_discount, request.expected_profit, request.rate_source_price, request.customer_effective_rate, request.liquidity_type, request.trading_amount_jpy, eventType);
         
         return request;
     }
@@ -440,59 +447,253 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             return;
         }
 
+        // Use the rate CAS applied on this transaction (ATM display), not a live API re-fetch.
         BigDecimal marketRate = td.getRateSourcePrice();
-        try {
-            if (apiClient != null && coin != null && fiat != null) {
-                RateResponse rr = apiClient.getBuyRate(apiKey, coin, fiat);
-                if (rr != null && rr.best_ask != null && rr.best_ask.compareTo(BigDecimal.ZERO) > 0) {
-                    marketRate = rr.best_ask;
+        if (marketRate == null || marketRate.compareTo(BigDecimal.ZERO) <= 0) {
+            try {
+                if (apiClient != null && coin != null && fiat != null) {
+                    RateResponse rr = apiClient.getBuyRate(apiKey, coin, fiat);
+                    if (rr != null && rr.best_ask != null && rr.best_ask.compareTo(BigDecimal.ZERO) > 0) {
+                        marketRate = rr.best_ask;
+                    }
                 }
+            } catch (Exception e) {
+                log.debug("[SEIKI] Could not fetch buy rate fallback for market_rate: crypto={}, fiat={}", coin, fiat, e);
             }
-        } catch (Exception e) {
-            log.debug("[SEIKI] Could not fetch buy rate for markup market_rate; using rateSource if set: crypto={}, fiat={}", coin, fiat, e);
         }
         if (marketRate != null && marketRate.compareTo(BigDecimal.ZERO) > 0) {
             request.market_rate = marketRate.toPlainString();
         }
 
-        if (cash != null && crypto != null && crypto.compareTo(BigDecimal.ZERO) > 0) {
-            BigDecimal effectiveFiatPerCrypto = cash.divide(crypto, 16, RoundingMode.HALF_UP);
-            request.markup_rate = effectiveFiatPerCrypto.toPlainString();
+        if (isHotWallet()) {
+            populateHotWalletMarkupPayload(request, td, cash, crypto, marketRate);
+            return;
         }
 
-        BigDecimal coinhubPct = DEFAULT_MARKUP_COINHUB_FEE_PERCENT;
-        BigDecimal tradeFeeFraction = BigDecimal.ZERO;
-        try {
-            if (apiClient != null && coin != null) {
-                String instrumentId = (fiat != null && !fiat.isEmpty()) ? coin + "-" + fiat : coin;
-                TransactionFeesResponse fees = apiClient.getTransactionFees(apiKey, new TransactionFeesRequest(instrumentId));
+        populateMexcMarkupPayload(request, td, coin, fiat, cash, crypto, marketRate);
+    }
 
-                if (fees != null) {
-                    if (fees.ch_fee != null) {
-                        coinhubPct = fees.ch_fee;
-                    }
-                    if (fees.trade_fee != null) {
-                        tradeFeeFraction = fees.trade_fee;
+    /** JPY available for buying crypto after the CAS fixed withdrawal fee. */
+    private BigDecimal resolveTradingJpy(ITransactionDetails td) {
+        BigDecimal cash = td.getCashAmount();
+        if (cash == null) {
+            return null;
+        }
+
+        BigDecimal withdrawalFeeJpy = feeConfig.getWithdrawalFeeJpy();
+        if (td.getFixedTransactionFee() != null
+            && td.getCashCurrency() != null
+            && "JPY".equalsIgnoreCase(td.getCashCurrency())) {
+            withdrawalFeeJpy = td.getFixedTransactionFee();
+        }
+
+        BigDecimal tradingJpy = cash.subtract(withdrawalFeeJpy);
+        return tradingJpy.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : tradingJpy;
+    }
+
+    /**
+     * ATM Rate column: {@code trading_jpy ÷ btc} (e.g. 18,073,150 JPY/BTC), not {@code cash ÷ btc}.
+     */
+    private void applyObservedAtmRate(
+        TransactionDetailsRequest request,
+        BigDecimal tradingJpy,
+        BigDecimal crypto,
+        BigDecimal marketRate
+    ) {
+        if (tradingJpy == null || crypto == null || crypto.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+
+        BigDecimal atmRate = tradingJpy.divide(crypto, 0, RoundingMode.HALF_UP);
+        request.markup_rate = atmRate.toPlainString();
+
+        if (marketRate != null && marketRate.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal markupPct = atmRate
+                .divide(marketRate, 16, RoundingMode.HALF_UP)
+                .subtract(BigDecimal.ONE)
+                .multiply(new BigDecimal("100"));
+            request.markup_percent_vs_rate_source = markupPct
+                .setScale(3, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
+        }
+    }
+
+    private boolean isHotWallet() {
+        return !"mexc".equalsIgnoreCase(btcWithdrawalSource());
+    }
+
+    /**
+     * Hot wallet: persist the rate the customer actually received on the ATM ({@code cash ÷ crypto}),
+     * not a theoretical {@code marketRate × casMarkup} from simulation math.
+     */
+    private void populateHotWalletMarkupPayload(
+        TransactionDetailsRequest request,
+        ITransactionDetails td,
+        BigDecimal cash,
+        BigDecimal crypto,
+        BigDecimal marketRate
+    ) {
+        BigDecimal coinhubPct = resolveCoinhubFeePercent(request.crypto_code, request.fiat_currency);
+        BigDecimal spreadPct = feeConfig.getFxSpreadPercent();
+        BigDecimal casBufferPct = feeConfig.getCasBufferPercent();
+
+        request.markup_coinhub_fee_percentage = formatPercent(coinhubPct);
+        request.markup_fx_spread_percentage = formatPercent(spreadPct);
+        request.markup_trade_fee_percentage = "0";
+        request.markup_cas_buffer = formatPercent(casBufferPct);
+
+        BigDecimal coinhubFraction = coinhubPct.divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP);
+        BigDecimal spreadFraction = spreadPct.divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP);
+        BigDecimal casBufferFraction = casBufferPct.divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP);
+
+        BigDecimal hotWalletMarkupSubtotal = coinhubFraction.add(spreadFraction);
+        request.hot_wallet_markup_subtotal_percentage = hotWalletMarkupSubtotal
+            .multiply(new BigDecimal("100"))
+            .setScale(6, RoundingMode.HALF_UP)
+            .stripTrailingZeros()
+            .toPlainString();
+
+        BigDecimal casMarkup = BigDecimal.ONE
+            .add(hotWalletMarkupSubtotal)
+            .multiply(BigDecimal.ONE.add(casBufferFraction));
+
+        BigDecimal totalPct = casMarkup.subtract(BigDecimal.ONE).multiply(new BigDecimal("100"));
+        request.markup_total_percentage = totalPct.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+
+        applyObservedAtmRate(request, resolveTradingJpy(td), crypto, marketRate);
+
+        log.info("[SEIKI] Hot wallet observed rate: market={}, atmRate={}, configuredTotalPct={}%",
+            marketRate, request.markup_rate, request.markup_total_percentage);
+    }
+
+    /** MEXC buy markup — includes live taker fee from {@code /service/transaction/fees}. */
+    private void populateMexcMarkupPayload(
+        TransactionDetailsRequest request,
+        ITransactionDetails td,
+        String coin,
+        String fiat,
+        BigDecimal cash,
+        BigDecimal crypto,
+        BigDecimal marketRate
+    ) {
+        applyObservedAtmRate(request, resolveTradingJpy(td), crypto, marketRate);
+
+        BigDecimal coinhubPct = feeConfig.getCoinhubFeePercent();
+        BigDecimal tradeFeeFraction = BigDecimal.ZERO;
+        if (feeConfig.useLiveFeesApi()) {
+            try {
+                if (apiClient != null && coin != null) {
+                    String instrumentId = (fiat != null && !fiat.isEmpty()) ? coin + "-" + fiat : coin;
+                    TransactionFeesResponse fees = apiClient.getTransactionFees(apiKey, new TransactionFeesRequest(instrumentId));
+
+                    if (fees != null) {
+                        if (fees.ch_fee != null) {
+                            coinhubPct = fees.ch_fee;
+                        }
+                        if (fees.trade_fee != null) {
+                            tradeFeeFraction = fees.trade_fee;
+                        }
                     }
                 }
+            } catch (Exception e) {
+                log.warn("[SEIKI] Failed to fetch transaction fees for MEXC markup; using config defaults: crypto={}", coin, e);
             }
-        } catch (Exception e) {
-            log.warn("[SEIKI] Failed to fetch transaction fees for markup fields; coinhub defaults to {}, trade fraction 0: crypto={}", DEFAULT_MARKUP_COINHUB_FEE_PERCENT, coin, e);
         }
 
-        request.markup_coinhub_fee_percentage = coinhubPct.setScale(12, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
-
-        BigDecimal tradeFeeAsPercent = tradeFeeFraction.multiply(new BigDecimal("100"));
-        request.markup_trade_fee_percentage = tradeFeeAsPercent.setScale(12, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
-
-        request.markup_cas_buffer = MARKUP_CAS_BUFFER_PERCENT.toPlainString();
+        request.markup_coinhub_fee_percentage = formatPercent(coinhubPct);
+        request.markup_trade_fee_percentage = tradeFeeFraction
+            .multiply(new BigDecimal("100"))
+            .setScale(12, RoundingMode.HALF_UP)
+            .stripTrailingZeros()
+            .toPlainString();
+        request.markup_cas_buffer = formatPercent(feeConfig.getCasBufferPercent());
 
         BigDecimal compound = BigDecimal.ONE
             .add(coinhubPct.divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP))
             .multiply(BigDecimal.ONE.add(tradeFeeFraction))
-            .multiply(BigDecimal.ONE.add(MARKUP_CAS_BUFFER_PERCENT.divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP)));
+            .multiply(BigDecimal.ONE.add(feeConfig.getCasBufferPercent().divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP)));
         BigDecimal totalPct = compound.subtract(BigDecimal.ONE).multiply(new BigDecimal("100"));
         request.markup_total_percentage = totalPct.setScale(12, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+    }
+
+    private BigDecimal resolveCoinhubFeePercent(String coin, String fiat) {
+        BigDecimal coinhubPct = feeConfig.getCoinhubFeePercent();
+        if (!feeConfig.useLiveFeesApi()) {
+            return coinhubPct;
+        }
+        try {
+            if (apiClient != null && coin != null) {
+                String instrumentId = (fiat != null && !fiat.isEmpty()) ? coin + "-" + fiat : coin;
+                TransactionFeesResponse fees = apiClient.getTransactionFees(apiKey, new TransactionFeesRequest(instrumentId));
+                if (fees != null && fees.ch_fee != null) {
+                    coinhubPct = fees.ch_fee;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[SEIKI] Using configured coinhub fee % for hot wallet markup: coin={}", coin, e);
+        }
+        return coinhubPct;
+    }
+
+    private String formatPercent(BigDecimal value) {
+        return value.setScale(12, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+    }
+
+    /**
+     * Populates withdrawal detail fields expected by operation {@code transaction_details}.
+     */
+    private void populateWithdrawalFinancialFields(TransactionDetailsRequest request, ITransactionDetails td) {
+        if (td.getType() != ITransactionDetails.TYPE_BUY_CRYPTO) {
+            return;
+        }
+
+        request.liquidity_type = "mexc".equalsIgnoreCase(btcWithdrawalSource()) ? "MEXC" : "Hotwallet";
+        request.jpy_to_usd_rate = feeConfig.getJpyUsdRate().toPlainString();
+
+        BigDecimal cash = td.getCashAmount();
+        if (cash != null) {
+            request.amount_insert = cash.toPlainString();
+        }
+
+        BigDecimal tradingJpy = resolveTradingJpy(td);
+        if (tradingJpy != null) {
+            request.withdrawal_fee_jpy = td.getFixedTransactionFee() != null
+                && td.getCashCurrency() != null
+                && "JPY".equalsIgnoreCase(td.getCashCurrency())
+                ? td.getFixedTransactionFee().toPlainString()
+                : feeConfig.getWithdrawalFeeJpy().toPlainString();
+            request.trading_amount_jpy = tradingJpy.setScale(2, RoundingMode.HALF_UP).toPlainString();
+            BigDecimal jpyUsdRate = feeConfig.getJpyUsdRate();
+            if (jpyUsdRate.compareTo(BigDecimal.ZERO) > 0) {
+                request.trading_amount_usd = tradingJpy
+                    .divide(jpyUsdRate, 8, RoundingMode.HALF_UP)
+                    .toPlainString();
+            }
+        }
+
+        if (td.getCryptoAmount() != null) {
+            request.btc_amount = td.getCryptoAmount().toPlainString();
+        }
+
+        if (td.getExpectedProfit() != null) {
+            request.coinhub_fee_percentage = td.getExpectedProfit()
+                .setScale(4, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
+        }
+
+        BigDecimal crypto = td.getCryptoAmount();
+        BigDecimal rateSource = td.getRateSourcePrice();
+        if (tradingJpy != null && crypto != null && rateSource != null
+            && tradingJpy.compareTo(BigDecimal.ZERO) > 0 && crypto.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal fiatAtMarket = crypto.multiply(rateSource);
+            BigDecimal markupProfitJpy = tradingJpy.subtract(fiatAtMarket);
+            if (markupProfitJpy.compareTo(BigDecimal.ZERO) < 0) {
+                markupProfitJpy = BigDecimal.ZERO;
+            }
+            request.coinhub_fee_amount = markupProfitJpy.setScale(2, RoundingMode.HALF_UP).toPlainString();
+        }
     }
 
     private void populateConfiguredProfitPercents(TransactionDetailsRequest request, ITransactionDetails td) {
