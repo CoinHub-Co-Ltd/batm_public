@@ -41,6 +41,7 @@ import si.mazi.rescu.RestProxyFactory;
 
 public class RYOExtension extends AbstractExtension implements ITerminalListener {
     private IExtensionContext ctx;
+    private CoinHubNotificationListener notificationListener;
     private static IExtensionContext extensionContext;
     private static final Logger log = LoggerFactory.getLogger(RYOExtension.class);
     private String chEndpoint = "http://api.coinhubportal.test";
@@ -66,12 +67,18 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
         CoinHubJPFeeTransactionListener feeListener = new CoinHubJPFeeTransactionListener(ctx, apiKey, chEndpoint);
         ctx.addTransactionListener(feeListener);
         ctx.addTerminalListener(this);
+        notificationListener = new CoinHubNotificationListener();
+        ctx.addNotificationListener(notificationListener);
     }
 
     @Override
     public void deinit() {
         if (ctx != null) {
             ctx.removeTerminalListener(this);
+            if (notificationListener != null) {
+                ctx.removeNotificationListener(notificationListener);
+                notificationListener = null;
+            }
         }
         extensionContext = null;
         super.deinit();

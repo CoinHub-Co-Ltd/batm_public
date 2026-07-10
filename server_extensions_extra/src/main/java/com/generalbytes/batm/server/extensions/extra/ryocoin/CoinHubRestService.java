@@ -67,6 +67,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
 
@@ -76,6 +77,7 @@ import javax.imageio.stream.MemoryCacheImageOutputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
+import javax.ws.rs.PATCH;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
@@ -440,6 +442,135 @@ public class CoinHubRestService implements IRestService {
     }
 
     /**
+     * CAS Admin cashboxes for replenish (signatures + counts). Proxies localhost:7777 from the CAS host.
+     *
+     * <p>Example:</p>
+     * {@code GET /extensions/coinhub/atm/cashboxes?serial_number=BT401469}
+     */
+    @GET
+    @Path("/atm/cashboxes")
+    public Map<String, Object> getAtmCashboxes(
+            @Context HttpServletRequest servletRequest,
+            @Context UriInfo uriInfo) {
+        String serialNumber = firstParam(servletRequest, uriInfo, "serial_number", "terminal", "serial", "sn");
+        if (serialNumber == null || serialNumber.trim().isEmpty()) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", "serial_number is required.");
+            return body;
+        }
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", "extension_context_unavailable");
+            return body;
+        }
+
+        try {
+            return new CoinHubCasAdminCashboxService(ctx).getTerminalCashboxesBySerial(serialNumber.trim());
+        } catch (Throwable e) {
+            log.error("atm/cashboxes endpoint error", e);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", e.getMessage());
+            return body;
+        }
+    }
+
+    /**
+     * Update CAS cashbox cassette counts via CAS Admin REST on localhost:7777.
+     *
+     * <p>Example body:</p>
+     * {@code {"items":[{"cashbox_signature":"...","item_signature":"...","count":30}]}}
+     */
+    @PATCH
+    @Path("/atm/cashbox-items")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Map<String, Object> patchAtmCashboxItems(InputStream entity) {
+        return updateAtmCashboxItemsFromStream(entity);
+    }
+
+    /**
+     * POST alias for environments that do not route PATCH to extension REST.
+     */
+    @POST
+    @Path("/atm/cashbox-items")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Map<String, Object> postAtmCashboxItems(InputStream entity) {
+        return updateAtmCashboxItemsFromStream(entity);
+    }
+
+    private Map<String, Object> updateAtmCashboxItemsFromStream(InputStream entity) {
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", "extension_context_unavailable");
+            return body;
+        }
+
+        try {
+            if (entity == null) {
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("status", false);
+                body.put("message", "Request body is required.");
+                return body;
+            }
+
+            JsonNode root = JSON.readTree(entity);
+            JsonNode itemsNode = root != null ? root.get("items") : null;
+            List<Map<String, Object>> items = CoinHubCasAdminCashboxService.parseItems(itemsNode);
+            return new CoinHubCasAdminCashboxService(ctx).updateCashboxItems(items);
+        } catch (Throwable e) {
+            log.error("atm/cashbox-items endpoint error", e);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", e.getMessage());
+            return body;
+        }
+    }
+
+    /**
+     * Clear buy/sell short counters (CAS Admin {@code POST /terminals/{signature}/clear-short-counters}).
+     */
+    @POST
+    @Path("/atm/clear-short-counters")
+    @Produces(MediaType.APPLICATION_JSON)
+    public Map<String, Object> postAtmClearShortCounters(
+            @Context HttpServletRequest servletRequest,
+            @Context UriInfo uriInfo) {
+        String serialNumber = firstParam(servletRequest, uriInfo, "serial_number", "terminal", "serial", "sn");
+        if (serialNumber == null || serialNumber.trim().isEmpty()) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", "serial_number is required.");
+            return body;
+        }
+
+        IExtensionContext ctx = RYOExtension.getExtensionContext();
+        if (ctx == null) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", "extension_context_unavailable");
+            return body;
+        }
+
+        try {
+            return new CoinHubCasAdminCashboxService(ctx).clearShortCountersBySerial(serialNumber.trim());
+        } catch (Throwable e) {
+            log.error("atm/clear-short-counters endpoint error", e);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("status", false);
+            body.put("message", e.getMessage());
+            return body;
+        }
+    }
+
+    /**
      * Returns how many ATMs are included in {@link #getAtmInfoAll()}: active, non-deleted terminals with a non-empty serial number.
      *
      * <p>Example:</p>
@@ -472,7 +603,8 @@ public class CoinHubRestService implements IRestService {
 
     /**
      * Returns cassette + acceptor cashbox summaries for active, non-deleted terminals, plus {@code company}
-     * (organization name) and {@code printer_status} (from terminal hardware error flags).
+     * (organization name), {@code printer_status} (from terminal hardware error flags), and grouped
+     * {@code atm_status} ({@code cassettes}, {@code cashbox}, {@code printer}, {@code other}).
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/atm/all}
@@ -492,6 +624,8 @@ public class CoinHubRestService implements IRestService {
         List<ITerminal> terminals = listCoinhubActiveAtmsWithSerial(ctx);
         Map<Long, String> organizationIdToName = buildOrganizationIdToNameMap(ctx);
         List<Map<String, Object>> out = new ArrayList<>();
+        CoinHubCasAdminCashboxService casAdmin = new CoinHubCasAdminCashboxService(ctx);
+        casAdmin.warmSerialSignatureIndex();
 
         for (ITerminal t : terminals) {
             String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
@@ -504,6 +638,7 @@ public class CoinHubRestService implements IRestService {
             row.put("terminal_deleted", t.isDeleted());
             row.put("company", companyNameForTerminal(t, organizationIdToName));
             row.put("printer_status", printerStatusFromErrors(t.getErrors()));
+            row.put("atm_status", buildAtmStatus(ctx, t, casAdmin));
 
             try {
                 List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
@@ -540,7 +675,8 @@ public class CoinHubRestService implements IRestService {
     }
 
     /**
-     * Returns terminal list with common operational details for active, non-deleted terminals only.
+     * Returns terminal list with common operational details for active, non-deleted terminals only,
+     * including grouped {@code atm_status} ({@code cassettes}, {@code cashbox}, {@code printer}, {@code other}).
      *
      * <p>Example:</p>
      * {@code GET /extensions/coinhub/terminal/all/details}
@@ -560,6 +696,8 @@ public class CoinHubRestService implements IRestService {
         List<ITerminal> terminals = listCoinhubActiveAtmsWithSerial(ctx);
         Map<Long, String> organizationIdToName = buildOrganizationIdToNameMap(ctx);
         List<Map<String, Object>> out = new ArrayList<>();
+        CoinHubCasAdminCashboxService casAdmin = new CoinHubCasAdminCashboxService(ctx);
+        casAdmin.warmSerialSignatureIndex();
 
         for (ITerminal t : terminals) {
             String sn = t.getSerialNumber() != null ? t.getSerialNumber().trim() : "";
@@ -582,6 +720,7 @@ public class CoinHubRestService implements IRestService {
             row.put("operational_mode", t.getOperationalMode());
             row.put("status", terminalStatusFromTerminal(t));
             row.put("printer_status", printerStatusFromErrors(t.getErrors()));
+            row.put("atm_status", buildAtmStatus(ctx, t, casAdmin));
 
             // Terminal "created/added at" is not available via ITerminal in this public API.
             row.put("created_at", null);
@@ -1079,6 +1218,147 @@ public class CoinHubRestService implements IRestService {
             return "Paper low";
         }
         return "Ok";
+    }
+
+    /**
+     * Grouped ATM status by hardware area: cassettes, cashbox (acceptor), printer, and other.
+     *
+     * <p>Per-slot cassette {@code OUT} (e.g. {@code C2 OUT}) or {@code DISPENSER CASSETTE REMOVED} comes from
+     * dispenser hardware notifications ({@link CoinHubNotificationListener}), with event-history hydration on read.
+     * All-cassettes {@code CASSETTES OUT} is a CAS Admin fallback when the acceptor cashbox is present but no
+     * {@code dispenser_cassette_*} rows remain.</p>
+     */
+    private static Map<String, List<String>> buildAtmStatus(IExtensionContext ctx, ITerminal terminal) {
+        return buildAtmStatus(ctx, terminal, new CoinHubCasAdminCashboxService(ctx));
+    }
+
+    private static Map<String, List<String>> buildAtmStatus(
+            IExtensionContext ctx,
+            ITerminal terminal,
+            CoinHubCasAdminCashboxService casAdmin
+    ) {
+        Map<String, List<String>> grouped = emptyAtmStatusGroups();
+        if (terminal == null) {
+            return grouped;
+        }
+
+        long errors = terminal.getErrors();
+        for (TerminalErrorBit bit : TERMINAL_ERROR_BITS) {
+            if ((errors & bit.flag) != 0) {
+                addAtmStatusLabel(grouped, bit.category, bit.code);
+            }
+        }
+
+        String sn = terminal.getSerialNumber();
+        if (sn != null && !sn.trim().isEmpty()) {
+            List<String> casAdminLabels = Collections.emptyList();
+            CoinHubDispenserCassetteTracker cassetteTracker = CoinHubDispenserCassetteTracker.getInstance();
+
+            if (ctx != null) {
+                try {
+                    cassetteTracker.hydrateFromEventsIfEmpty(ctx, sn);
+                } catch (RuntimeException e) {
+                    log.debug("atm_status cassette event hydration failed for {}", sn, e);
+                }
+            }
+
+            if (casAdmin != null) {
+                try {
+                    casAdminLabels = casAdmin.getHardwareSnapshot(sn).labels;
+                } catch (RuntimeException e) {
+                    log.debug("atm_status CAS admin enrichment failed for {}", sn, e);
+                }
+            }
+
+            try {
+                for (String label : cassetteTracker.outLabelsFor(sn)) {
+                    addAtmStatusLabel(grouped, AtmStatusCategory.CASSETTES, label);
+                }
+            } catch (RuntimeException e) {
+                log.debug("atm_status dispenser cassette tracker failed for {}", sn, e);
+            }
+
+            boolean cassetteOutReported = cassetteTracker.hasCassetteOut(sn);
+
+            for (String label : casAdminLabels) {
+                if ("ACCEPTOR OUT".equals(label)
+                        && (errors & ITerminal.ERROR_ACCEPTOR_STACKER_OUT) != 0) {
+                    continue;
+                }
+                if ("ACCEPTOR OUT".equals(label)) {
+                    addAtmStatusLabel(grouped, AtmStatusCategory.CASHBOX, label);
+                } else if ("CASSETTES OUT".equals(label) && !cassetteOutReported) {
+                    addAtmStatusLabel(grouped, AtmStatusCategory.CASSETTES, label);
+                }
+            }
+        }
+        return grouped;
+    }
+
+    private static Map<String, List<String>> emptyAtmStatusGroups() {
+        Map<String, List<String>> grouped = new LinkedHashMap<>();
+        for (AtmStatusCategory category : AtmStatusCategory.values()) {
+            grouped.put(category.key, new ArrayList<>());
+        }
+        return grouped;
+    }
+
+    private static void addAtmStatusLabel(
+            Map<String, List<String>> grouped,
+            AtmStatusCategory category,
+            String label
+    ) {
+        List<String> bucket = grouped.get(category.key);
+        if (bucket != null && !bucket.contains(label)) {
+            bucket.add(label);
+        }
+    }
+
+    private enum AtmStatusCategory {
+        CASSETTES("cassettes"),
+        CASHBOX("cashbox"),
+        PRINTER("printer"),
+        OTHER("other");
+
+        final String key;
+
+        AtmStatusCategory(String key) {
+            this.key = key;
+        }
+    }
+
+    private static final TerminalErrorBit[] TERMINAL_ERROR_BITS = {
+            new TerminalErrorBit(ITerminal.ERROR_SERVER_IS_NOT_REACHABLE, "ERROR_SERVER_IS_NOT_REACHABLE", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_ACCEPTOR_STACKER_OUT, "ERROR_ACCEPTOR_STACKER_OUT", AtmStatusCategory.CASHBOX),
+            new TerminalErrorBit(ITerminal.ERROR_ACCEPTOR_STACKER_FULL, "ERROR_ACCEPTOR_STACKER_FULL", AtmStatusCategory.CASHBOX),
+            new TerminalErrorBit(ITerminal.ERROR_ACCEPTOR_OTHER_ERROR, "ERROR_ACCEPTOR_OTHER_ERROR", AtmStatusCategory.CASHBOX),
+            new TerminalErrorBit(ITerminal.ERROR_NO_CAMERA, "ERROR_NO_CAMERA", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.WARNING_NO_PRINTER_PAPER, "WARNING_NO_PRINTER_PAPER", AtmStatusCategory.PRINTER),
+            new TerminalErrorBit(ITerminal.ERROR_ACCEPTOR_JAM_ERROR, "ERROR_ACCEPTOR_JAM_ERROR", AtmStatusCategory.CASHBOX),
+            new TerminalErrorBit(ITerminal.WARNING_NO_NFC_CARD, "WARNING_NO_NFC_CARD", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_CONNECTION_REJECTED, "ERROR_CONNECTION_REJECTED", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_CONNECTION_TIMEOUT, "ERROR_CONNECTION_TIMEOUT", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.UNKNOWN_NETWORK_ERROR, "UNKNOWN_NETWORK_ERROR", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_TLS_SERVER_CERTIFICATE_FINGERPRINT_MISMATCH, "ERROR_TLS_SERVER_CERTIFICATE_FINGERPRINT_MISMATCH", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_TLS_ERROR, "ERROR_TLS_ERROR", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.WARNING_PRINTER_PAPER_LOW, "WARNING_PRINTER_PAPER_LOW", AtmStatusCategory.PRINTER),
+            new TerminalErrorBit(ITerminal.WARNING_NFC_COLLECT_BIN_FULL, "WARNING_NFC_COLLECT_BIN_FULL", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.WARNING_LAST_NFC_DISPENSE_ERROR, "WARNING_LAST_NFC_DISPENSE_ERROR", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.WARNING_NFC_CARDS_RUNNING_LOW, "WARNING_NFC_CARDS_RUNNING_LOW", AtmStatusCategory.OTHER),
+            new TerminalErrorBit(ITerminal.ERROR_PRINTER_DISCONNECTED, "ERROR_PRINTER_DISCONNECTED", AtmStatusCategory.PRINTER),
+            new TerminalErrorBit(ITerminal.ERROR_ACCEPTOR_IS_NOT_DETECTED, "ERROR_ACCEPTOR_IS_NOT_DETECTED", AtmStatusCategory.CASHBOX),
+    };
+
+    private static final class TerminalErrorBit {
+        final long flag;
+        final String code;
+        final AtmStatusCategory category;
+
+        TerminalErrorBit(long flag, String code, AtmStatusCategory category) {
+            this.flag = flag;
+            this.code = code;
+            this.category = category;
+        }
     }
 
     private static Long dateToEpochMillis(Date d) {
