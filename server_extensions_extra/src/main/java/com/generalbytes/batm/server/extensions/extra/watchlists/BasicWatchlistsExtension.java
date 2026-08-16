@@ -23,6 +23,7 @@ import com.generalbytes.batm.server.extensions.extra.watchlists.ca.CaWatchList;
 import com.generalbytes.batm.server.extensions.extra.watchlists.czech.CzechSanctionList;
 import com.generalbytes.batm.server.extensions.extra.watchlists.eu.EUSanctionsList;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ofac.OFACWatchList;
+import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubWatchList;
 import com.generalbytes.batm.server.extensions.watchlist.IWatchList;
 
 import java.util.HashSet;
@@ -33,6 +34,24 @@ public class BasicWatchlistsExtension extends AbstractExtension{
     private final IWatchList czechSanctionList = new CzechSanctionList();
     private final IWatchList euSanctionList = new EUSanctionsList();
     private final IWatchList caWatchList = new CaWatchList();
+    private CoinHubWatchList coinHubWatchList;
+
+    @Override
+    public void init(IExtensionContext ctx) {
+        super.init(ctx);
+
+        String apiKey = null;
+        String apiEndpoint = null;
+        if (ctx.configFileExists("coinhub")) {
+            apiKey = ctx.getConfigProperty("coinhub", "api_key", null);
+            apiEndpoint = ctx.getConfigProperty("coinhub", "api_endpoint", null);
+        }
+
+        if (apiKey != null && apiEndpoint != null) {
+            coinHubWatchList = new CoinHubWatchList(apiKey, apiEndpoint);
+            coinHubWatchList.setExtensionContext(ctx);
+        }
+    }
 
     @Override
     public String getName() {
@@ -46,6 +65,9 @@ public class BasicWatchlistsExtension extends AbstractExtension{
         watchListNames.add(czechSanctionList.getName());
         watchListNames.add(euSanctionList.getName());
         watchListNames.add(caWatchList.getName());
+        if (coinHubWatchList != null) {
+            watchListNames.add(coinHubWatchList.getName());
+        }
         return watchListNames;
     }
 
@@ -63,6 +85,11 @@ public class BasicWatchlistsExtension extends AbstractExtension{
         if (caWatchList.getName().equals(name)) {
             return caWatchList;
         }
+
+        if (coinHubWatchList != null && coinHubWatchList.getName().equals(name)) {
+            return coinHubWatchList;
+        }
+
         return null;
     }
 }
