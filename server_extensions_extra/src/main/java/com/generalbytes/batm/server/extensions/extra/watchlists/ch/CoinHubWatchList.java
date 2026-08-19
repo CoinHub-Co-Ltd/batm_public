@@ -32,7 +32,12 @@ import org.slf4j.LoggerFactory;
 
 import si.mazi.rescu.RestProxyFactory;
 
+import java.text.SimpleDateFormat;
+import java.util.Collections;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
 import java.util.stream.Collectors;
 
 public class CoinHubWatchList implements IWatchList {
@@ -95,6 +100,9 @@ public class CoinHubWatchList implements IWatchList {
             if (response == null || response.matches == null) {
                 return new WatchListResult(WatchListResult.RESULT_TYPE_WATCHLIST_NOT_READY);
             }
+            if (response.matches.isEmpty()) {
+                return new WatchListResult(Collections.emptyList());
+            }
             return mapResult(response.matches);
         } catch (Exception e) {
             log.error("CoinHub watchlist search failed", e);
@@ -104,7 +112,6 @@ public class CoinHubWatchList implements IWatchList {
 
     private WatchlistSearchRequest mapRequest(WatchListQuery query) {
         WatchlistSearchRequest request = new WatchlistSearchRequest();
-        request.type = query.getType();
         request.firstName = query.getFirstName();
         request.lastName = query.getLastName();
         request.name = query.getName();
@@ -132,14 +139,29 @@ public class CoinHubWatchList implements IWatchList {
                     && piece.getPhoneNumber() != null) {
                 request.phone = piece.getPhoneNumber();
             }
+
+            if (piece.getPieceType() == IIdentityPiece.TYPE_PERSONAL_INFORMATION) {
+                if (piece.getContactCountryIso2() != null) {
+                    request.country = piece.getContactCountryIso2();
+                }
+                if (piece.getDateOfBirth() != null) {
+                    request.birthOfDate = formatDateOfBirth(piece.getDateOfBirth());
+                }
+            }
         }
+    }
+
+    private String formatDateOfBirth(Date date) {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return sdf.format(date);
     }
 
     private WatchListResult mapResult(List<WatchlistSearchResponse.Match> result) {
         List<WatchListMatch> matches = result.stream()
             .map(match -> new WatchListMatch(
                 match.score,
-                "Matched Coinhub Watch List. PartyIndex: " + match.partyId + ".",
+                match.details,
                 getId(),
                 getName(),
                 match.partyId))

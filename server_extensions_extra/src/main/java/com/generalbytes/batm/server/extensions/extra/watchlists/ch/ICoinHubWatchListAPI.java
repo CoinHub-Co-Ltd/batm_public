@@ -35,7 +35,7 @@ public interface ICoinHubWatchListAPI {
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    @Path("/watchlist/search")
+    @Path("/service/kyc-aml/watchlist")
     WatchlistSearchResponse searchWatchlist(
         @HeaderParam("X-API-SECRET") String apiKey,
         WatchlistSearchRequest request);
