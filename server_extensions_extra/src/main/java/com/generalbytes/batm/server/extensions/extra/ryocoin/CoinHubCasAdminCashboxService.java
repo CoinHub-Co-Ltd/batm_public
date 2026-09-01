@@ -884,6 +884,13 @@ final class CoinHubCasAdminCashboxService {
                     row.put("currency", textValue(item.get("currency")));
                     row.put("count", item.has("count") ? item.get("count").asInt(0) : 0);
                     row.put("value", jsonValue(item.get("value")));
+                    int standard = 0;
+                    if (cashbox.has("standardBanknoteCount")) {
+                        standard = cashbox.get("standardBanknoteCount").asInt(0);
+                    } else if (cashbox.has("standardbanknotecount")) {
+                        standard = cashbox.get("standardbanknotecount").asInt(0);
+                    }
+                    row.put("standard_banknote_count", standard);
                     cassettes.add(row);
 
                     if ("OUT".equalsIgnoreCase(cashboxType) && cashboxName.startsWith("dispenser_cassette_")) {
