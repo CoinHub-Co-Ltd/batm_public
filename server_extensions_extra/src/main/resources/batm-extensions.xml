@@ -2494,6 +2494,12 @@
             <cryptocurrency>ETH</cryptocurrency>
             <cryptocurrency>SHIB</cryptocurrency>
         </wallet>
+        <wallet prefix="coinhubjp-dev" name="RYO (Dev)">
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+        </wallet>
         <ratesource prefix="coinhubratesource" name ="CoinHub Co., Ltd Rate Source" >
             <param name="price" />
             <cryptocurrency>BTC</cryptocurrency>
@@ -2503,6 +2509,25 @@
             <help>USD is default fiat currency.</help>
         </ratesource>
         <exchange prefix="coinhubjp" name="CoinHub-JP">
+            <param name="key"/>
+            <param name="privatekey"/>
+            <param name="fiatcurrency"/>
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+        </exchange>
+
+        <!-- dev -->
+        <ratesource prefix="coinhubratesource-dev" name ="CoinHub Co., Ltd Rate Source (dev)" >
+            <param name="price" />
+            <cryptocurrency>BTC</cryptocurrency>
+            <cryptocurrency>DOGE</cryptocurrency>
+            <cryptocurrency>ETH</cryptocurrency>
+            <cryptocurrency>SHIB</cryptocurrency>
+            <help>USD is default fiat currency.</help>
+        </ratesource>
+        <exchange prefix="coinhubjp-dev" name="CoinHub-JP (dev)">
             <param name="key"/>
             <param name="privatekey"/>
             <param name="fiatcurrency"/>
