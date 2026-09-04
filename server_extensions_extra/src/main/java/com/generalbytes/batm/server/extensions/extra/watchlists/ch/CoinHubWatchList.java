@@ -34,8 +34,10 @@ import com.generalbytes.batm.server.extensions.customfields.value.CustomFieldVal
 import com.generalbytes.batm.server.extensions.customfields.value.StringCustomFieldValue;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.TimeZone;
 
 import org.slf4j.Logger;
@@ -99,8 +101,11 @@ public class CoinHubWatchList implements IWatchList {
     public WatchListResult search(WatchListQuery query) {
         try {
             WatchlistSearchRequest request = mapRequest(query);
-            if (request == null) {
-                return deny("Incomplete identity for CoinHub watchlist (need firstName, lastName, country, birthOfDate)");
+            String missingFields = getMissingRequiredFields(request);
+            if (missingFields != null) {
+                log.info("[CH-WatchList] Skipping CoinHub check for identity {} — missing: {} (check will run again when data is complete)",
+                    query.getIdentityPublicId(), missingFields);
+                return new WatchListResult(Collections.emptyList());
             }
 
             WatchlistSearchResponse response = api.searchWatchlist(apiKey, request);
@@ -129,11 +134,24 @@ public class CoinHubWatchList implements IWatchList {
         request.identityPublicId = query.getIdentityPublicId();
         fillContact(request, query.getIdentityPublicId());
         getCustomFields(request, query.getIdentityPublicId());
-        if (isBlank(request.firstName) || isBlank(request.lastName)
-                || isBlank(request.country) || isBlank(request.birthOfDate)) {
-            return null;
-        }
         return request;
+    }
+
+    private static String getMissingRequiredFields(WatchlistSearchRequest request) {
+        List<String> missing = new ArrayList<>();
+        if (isBlank(request.firstName)) {
+            missing.add("firstName");
+        }
+        if (isBlank(request.lastName)) {
+            missing.add("lastName");
+        }
+        if (isBlank(request.country)) {
+            missing.add("country");
+        }
+        if (isBlank(request.birthOfDate)) {
+            missing.add("birthOfDate");
+        }
+        return missing.isEmpty() ? null : String.join(", ", missing);
     }
 
     private void getCustomFields(WatchlistSearchRequest request, String identityPublicId) {

@@ -638,13 +638,13 @@ public class CoinHubRestService implements IRestService {
             row.put("terminal_deleted", t.isDeleted());
             row.put("company", companyNameForTerminal(t, organizationIdToName));
             row.put("printer_status", printerStatusFromErrors(t.getErrors()));
-            row.put("atm_status", buildAtmStatus(ctx, t, casAdmin));
 
             try {
                 List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
                 List<IBanknoteCounts> cassettes = filterByCashboxNamePrefix(cashBoxes, "dispenser_cassette_");
                 List<IBanknoteCounts> acceptorCashbox = filterAcceptorCashboxRows(cashBoxes);
 
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, cashBoxes));
                 row.put("cassette_summary", summarizeCassetteBoxes(cassettes));
                 TreeSet<BigDecimal> fallbackDenoms = collectJpyDenominationsSorted(cassettes);
                 List<Map<String, Object>> cashboxSummary = summarizeAcceptorCashboxJpyFlat(acceptorCashbox, fallbackDenoms);
@@ -654,11 +654,13 @@ public class CoinHubRestService implements IRestService {
                 row.put("cashbox_summary", cashboxSummary);
                 row.put("ok", true);
             } catch (IllegalArgumentException e) {
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, null));
                 row.put("ok", false);
                 row.put("error", "invalid_parameters");
                 row.put("detail", e.getMessage());
             } catch (Throwable e) {
                 log.error("atm/all terminal summary failed: {}", sn, e);
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, null));
                 row.put("ok", false);
                 row.put("error", "unexpected");
                 row.put("detail", e.getMessage());
@@ -720,22 +722,24 @@ public class CoinHubRestService implements IRestService {
             row.put("operational_mode", t.getOperationalMode());
             row.put("status", terminalStatusFromTerminal(t));
             row.put("printer_status", printerStatusFromErrors(t.getErrors()));
-            row.put("atm_status", buildAtmStatus(ctx, t, casAdmin));
 
             // Terminal "created/added at" is not available via ITerminal in this public API.
             row.put("created_at", null);
 
             try {
                 List<IBanknoteCounts> cashBoxes = safeList(ctx.getCashBoxes(sn));
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, cashBoxes));
                 row.put("cash_status", cashStatusFromCashBoxes(cashBoxes));
                 row.put("ok", true);
             } catch (IllegalArgumentException e) {
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, null));
                 row.put("ok", true);
                 row.put("cash_status", null);
                 row.put("cash_status_warning", "unavailable");
                 row.put("cash_status_detail", e.getMessage());
             } catch (Throwable e) {
                 log.error("terminal/all/details cash status failed: {}", sn, e);
+                row.put("atm_status", buildAtmStatus(ctx, t, casAdmin, null));
                 row.put("ok", true);
                 row.put("cash_status", null);
                 row.put("cash_status_warning", "unexpected");
@@ -1220,22 +1224,23 @@ public class CoinHubRestService implements IRestService {
         return "Ok";
     }
 
-    /**
-     * Grouped ATM status by hardware area: cassettes, cashbox (acceptor), printer, and other.
-     *
-     * <p>Per-slot cassette {@code OUT} (e.g. {@code C2 OUT}) or {@code DISPENSER CASSETTE REMOVED} comes from
-     * dispenser hardware notifications ({@link CoinHubNotificationListener}), with event-history hydration on read.
-     * All-cassettes {@code CASSETTES OUT} is a CAS Admin fallback when the acceptor cashbox is present but no
-     * {@code dispenser_cassette_*} rows remain.</p>
-     */
     private static Map<String, List<String>> buildAtmStatus(IExtensionContext ctx, ITerminal terminal) {
-        return buildAtmStatus(ctx, terminal, new CoinHubCasAdminCashboxService(ctx));
+        return buildAtmStatus(ctx, terminal, new CoinHubCasAdminCashboxService(ctx), null);
     }
 
     private static Map<String, List<String>> buildAtmStatus(
             IExtensionContext ctx,
             ITerminal terminal,
             CoinHubCasAdminCashboxService casAdmin
+    ) {
+        return buildAtmStatus(ctx, terminal, casAdmin, null);
+    }
+
+    private static Map<String, List<String>> buildAtmStatus(
+            IExtensionContext ctx,
+            ITerminal terminal,
+            CoinHubCasAdminCashboxService casAdmin,
+            List<IBanknoteCounts> cashBoxes
     ) {
         Map<String, List<String>> grouped = emptyAtmStatusGroups();
         if (terminal == null) {
@@ -1249,50 +1254,46 @@ public class CoinHubRestService implements IRestService {
             }
         }
 
-        String sn = terminal.getSerialNumber();
-        if (sn != null && !sn.trim().isEmpty()) {
-            List<String> casAdminLabels = Collections.emptyList();
-            CoinHubDispenserCassetteTracker cassetteTracker = CoinHubDispenserCassetteTracker.getInstance();
-
-            if (ctx != null) {
-                try {
-                    cassetteTracker.hydrateFromEventsIfEmpty(ctx, sn);
-                } catch (RuntimeException e) {
-                    log.debug("atm_status cassette event hydration failed for {}", sn, e);
+        if (cashBoxes != null) {
+            Set<Integer> installed = dispenserSlotsFromCashBoxes(cashBoxes);
+            for (int slot = 1; slot <= 3; slot++) {
+                if (!installed.contains(slot)) {
+                    addAtmStatusLabel(grouped, AtmStatusCategory.CASSETTES, "C" + slot + " OUT");
                 }
             }
+        }
 
-            if (casAdmin != null) {
+        if (casAdmin != null) {
+            String sn = terminal.getSerialNumber();
+            if (sn != null && !sn.trim().isEmpty()) {
                 try {
-                    casAdminLabels = casAdmin.getHardwareSnapshot(sn).labels;
+                    for (String label : casAdmin.getHardwareSnapshot(sn).labels) {
+                        if ("ACCEPTOR OUT".equals(label)
+                                && (errors & ITerminal.ERROR_ACCEPTOR_STACKER_OUT) == 0) {
+                            addAtmStatusLabel(grouped, AtmStatusCategory.CASHBOX, label);
+                        }
+                    }
                 } catch (RuntimeException e) {
                     log.debug("atm_status CAS admin enrichment failed for {}", sn, e);
                 }
             }
+        }
 
-            try {
-                for (String label : cassetteTracker.outLabelsFor(sn)) {
-                    addAtmStatusLabel(grouped, AtmStatusCategory.CASSETTES, label);
-                }
-            } catch (RuntimeException e) {
-                log.debug("atm_status dispenser cassette tracker failed for {}", sn, e);
+        return grouped;
+    }
+
+    private static Set<Integer> dispenserSlotsFromCashBoxes(List<IBanknoteCounts> cashBoxes) {
+        Set<Integer> slots = new LinkedHashSet<>();
+        for (IBanknoteCounts box : safeList(cashBoxes)) {
+            if (box == null) {
+                continue;
             }
-
-            boolean cassetteOutReported = cassetteTracker.hasCassetteOut(sn);
-
-            for (String label : casAdminLabels) {
-                if ("ACCEPTOR OUT".equals(label)
-                        && (errors & ITerminal.ERROR_ACCEPTOR_STACKER_OUT) != 0) {
-                    continue;
-                }
-                if ("ACCEPTOR OUT".equals(label)) {
-                    addAtmStatusLabel(grouped, AtmStatusCategory.CASHBOX, label);
-                } else if ("CASSETTES OUT".equals(label) && !cassetteOutReported) {
-                    addAtmStatusLabel(grouped, AtmStatusCategory.CASSETTES, label);
-                }
+            Integer slot = CoinHubDispenserCassetteTracker.slotFromCashboxName(box.getCashboxName());
+            if (slot != null) {
+                slots.add(slot);
             }
         }
-        return grouped;
+        return slots;
     }
 
     private static Map<String, List<String>> emptyAtmStatusGroups() {
