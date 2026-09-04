@@ -33,6 +33,7 @@ final class CoinHubDispenserCassetteTracker {
     private static final Logger log = LoggerFactory.getLogger(CoinHubDispenserCassetteTracker.class);
     private static final CoinHubDispenserCassetteTracker INSTANCE = new CoinHubDispenserCassetteTracker();
     private static final int EVENT_HYDRATION_LOOKBACK_DAYS = 90;
+    private static final int MAX_DISPENSER_SLOT = 3;
 
     private static final Pattern DISPENSER_CASSETTE_NAME = Pattern.compile(
             "(?i)dispenser_cassette_(\\d+)"
@@ -172,7 +173,7 @@ final class CoinHubDispenserCassetteTracker {
         Set<Integer> outSlots = outSlotsBySerial.get(serialKey);
         if (outSlots != null) {
             outSlots.stream()
-                    .filter(slot -> slot != null && slot > 0)
+                    .filter(slot -> slot != null && slot >= 1 && slot <= MAX_DISPENSER_SLOT)
                     .sorted()
                     .forEach(slot -> labels.add(slotToLabel(slot)));
         }
@@ -262,23 +263,19 @@ final class CoinHubDispenserCassetteTracker {
 
     private static boolean isCassetteOutEvent(String blob) {
         String lower = blob.toLowerCase(Locale.ROOT);
-        if (!lower.contains("cassette")) {
-            return false;
-        }
-        return lower.contains("removed")
+        return lower.contains("cassette")
+                && (lower.contains("removed")
                 || lower.contains("eject")
                 || lower.contains("cassette out")
-                || lower.matches(".*\\bout\\b.*");
+                || lower.contains("cassettes out"));
     }
 
     private static boolean isCassetteInEvent(String blob) {
         String lower = blob.toLowerCase(Locale.ROOT);
-        if (!lower.contains("cassette")) {
-            return false;
-        }
-        return lower.contains("insert")
+        return lower.contains("cassette")
+                && (lower.contains("insert")
                 || lower.contains("cassette in")
-                || lower.matches(".*\\bin\\b.*");
+                || lower.contains("cassettes in"));
     }
 
     private static String[] splitTokens(String cassetteInfo) {
@@ -317,7 +314,7 @@ final class CoinHubDispenserCassetteTracker {
         }
         try {
             int slot = Integer.parseInt(raw.trim());
-            return slot >= 1 && slot <= 9 ? slot : null;
+            return slot >= 1 && slot <= MAX_DISPENSER_SLOT ? slot : null;
         } catch (NumberFormatException e) {
             return null;
         }
