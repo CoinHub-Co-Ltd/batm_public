@@ -69,6 +69,9 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
         ctx.addTerminalListener(this);
         notificationListener = new CoinHubNotificationListener();
         ctx.addNotificationListener(notificationListener);
+
+        CoinHubSecurityListener securityListener = new CoinHubSecurityListener(ctx, apiKey, chEndpoint);
+        ctx.addTransactionListener(securityListener);
     }
 
     @Override

@@ -20,7 +20,10 @@ package com.generalbytes.batm.server.extensions.extra.ryocoin.sources;
 
 import java.math.BigDecimal;
 
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.TransactionFeesRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.RateResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.TransactionFeesResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.WalletBalanceResponse;
@@ -29,6 +32,7 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.Consumes;
@@ -64,4 +68,19 @@ public interface ICoinHubAPI {
     @Produces(MediaType.APPLICATION_JSON)
     @Path("/service/transaction/fees")
     TransactionFeesResponse getTransactionFees(@HeaderParam("X-API-SECRET") String apiKey, TransactionFeesRequest request);
+
+    @GET
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("/transaction-ledger/ledger")
+    LedgerResponse getLedger(
+        @HeaderParam("X-API-SECRET") String apiKey,
+        @QueryParam("identity_id") String identityId);
+
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("/transaction-ledger/create")
+    LedgerEntry createLedgerTransaction(
+        @HeaderParam("X-API-SECRET") String apiKey,
+        CreateLedgerRequest request);
 }
