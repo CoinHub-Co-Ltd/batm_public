@@ -71,7 +71,7 @@ public interface ICoinHubAPI {
 
     @GET
     @Produces(MediaType.APPLICATION_JSON)
-    @Path("/transaction-ledger/ledger")
+    @Path("/service/transaction-ledger/ledger")
     LedgerResponse getLedger(
         @HeaderParam("X-API-SECRET") String apiKey,
         @QueryParam("identity_id") String identityId);
@@ -79,7 +79,7 @@ public interface ICoinHubAPI {
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    @Path("/transaction-ledger/create")
+    @Path("/service/transaction-ledger/create")
     LedgerEntry createLedgerTransaction(
         @HeaderParam("X-API-SECRET") String apiKey,
         CreateLedgerRequest request);

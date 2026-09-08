@@ -103,19 +103,39 @@ public class CoinHubWatchList implements IWatchList {
             WatchlistSearchRequest request = mapRequest(query);
             String missingFields = getMissingRequiredFields(request);
             if (missingFields != null) {
-                log.info("[CH-WatchList] Skipping CoinHub check for identity {} — missing: {} (check will run again when data is complete)",
+                log.info("[CH-WatchList] Skipping CoinHub check for identity {} — missing: {} (wait for DOB step)",
                     query.getIdentityPublicId(), missingFields);
                 return new WatchListResult(Collections.emptyList());
             }
 
-            WatchlistSearchResponse response = api.searchWatchlist(apiKey, request);
+            WatchlistSearchRequest apiRequest = new WatchlistSearchRequest();
+            apiRequest.firstName = request.firstName;
+            apiRequest.lastName = request.lastName;
+            apiRequest.birthOfDate = request.birthOfDate;
+            apiRequest.identityPublicId = request.identityPublicId;
+
+            log.info("[CH-WatchList] Calling initial-security identity={} firstName={} lastName={} dob={}",
+                query.getIdentityPublicId(), apiRequest.firstName, apiRequest.lastName, apiRequest.birthOfDate);
+            WatchlistSearchResponse response = api.searchWatchlist(apiKey, apiRequest);
             if (response == null || response.grade == null) {
                 return deny("CoinHub watchlist unavailable (empty response)");
             }
+            log.info("[CH-WatchList] initial-security result identity={} grade={}",
+                query.getIdentityPublicId(), response.grade);
             return mapResult(response.grade);
         } catch (Exception e) {
-            log.error("CoinHub watchlist search failed", e);
-            return deny("CoinHub watchlist unavailable: " + e.getMessage());
+            Throwable root = e;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            String detail = root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName();
+            if (root instanceof si.mazi.rescu.HttpStatusIOException) {
+                si.mazi.rescu.HttpStatusIOException http = (si.mazi.rescu.HttpStatusIOException) root;
+                detail = "HTTP " + http.getHttpStatusCode() + " body=" + http.getHttpBody();
+            }
+            log.error("CoinHub watchlist search failed identity={} detail={}",
+                query.getIdentityPublicId(), detail, e);
+            return deny("CoinHub watchlist unavailable: " + detail);
         }
     }
 
@@ -144,9 +164,6 @@ public class CoinHubWatchList implements IWatchList {
         }
         if (isBlank(request.lastName)) {
             missing.add("lastName");
-        }
-        if (isBlank(request.country)) {
-            missing.add("country");
         }
         if (isBlank(request.birthOfDate)) {
             missing.add("birthOfDate");
@@ -240,16 +257,6 @@ public class CoinHubWatchList implements IWatchList {
                 }
                 if (isBlank(request.lastName) && piece.getLastname() != null) {
                     request.lastName = piece.getLastname();
-                }
-                if (isBlank(request.country)) {
-                    if (piece.getContactCountryIso2() != null) {
-                        request.country = piece.getContactCountryIso2().toUpperCase();
-                    } else if (piece.getIssuingJurisdictionCountry() != null) {
-                        request.country = piece.getIssuingJurisdictionCountry().toUpperCase();
-                    } else if (piece.getContactCountry() != null
-                            && piece.getContactCountry().length() == 2) {
-                        request.country = piece.getContactCountry().toUpperCase();
-                    }
                 }
                 if (request.birthOfDate == null && piece.getDateOfBirth() != null) {
                     request.birthOfDate = formatDob(piece.getDateOfBirth());

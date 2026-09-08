@@ -151,9 +151,9 @@ public class CoinHubSecurityListener implements ITransactionListener {
             if (td == null || td.getIdentityPublicId() == null) {
                 return new HashMap<>();
             }
-            if (!isCompletedBuyOrSell(td)) {
-                return new HashMap<>();
-            }
+            // if (!isCompletedBuyOrSell(td)) {
+            //     return new HashMap<>();
+            // }
             createLedgerTransaction(td);
         } catch (Exception e) {
             log.error("[Security] createLedger failed rid={}", td != null ? td.getRemoteTransactionId() : null, e);
