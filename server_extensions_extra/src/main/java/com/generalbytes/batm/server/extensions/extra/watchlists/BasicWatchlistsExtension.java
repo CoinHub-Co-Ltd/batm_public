@@ -24,6 +24,7 @@ import com.generalbytes.batm.server.extensions.extra.watchlists.czech.CzechSanct
 import com.generalbytes.batm.server.extensions.extra.watchlists.eu.EUSanctionsList;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ofac.OFACWatchList;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubWatchList;
+import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubSecurity1Listener;
 import com.generalbytes.batm.server.extensions.watchlist.IWatchList;
 
 import java.util.HashSet;
@@ -50,6 +51,7 @@ public class BasicWatchlistsExtension extends AbstractExtension{
         if (apiKey != null && apiEndpoint != null) {
             coinHubWatchList = new CoinHubWatchList(apiKey, apiEndpoint);
             coinHubWatchList.setExtensionContext(ctx);
+            ctx.addTransactionListener(new CoinHubSecurity1Listener(ctx, coinHubWatchList));
         }
     }
 

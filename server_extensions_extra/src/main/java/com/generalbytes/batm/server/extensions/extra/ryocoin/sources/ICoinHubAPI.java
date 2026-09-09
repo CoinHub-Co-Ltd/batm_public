@@ -21,7 +21,9 @@ package com.generalbytes.batm.server.extensions.extra.ryocoin.sources;
 import java.math.BigDecimal;
 
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintCheckRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.TransactionFeesRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.RateResponse;
@@ -83,4 +85,12 @@ public interface ICoinHubAPI {
     LedgerEntry createLedgerTransaction(
         @HeaderParam("X-API-SECRET") String apiKey,
         CreateLedgerRequest request);
+
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("/service/transaction-ledger/check")
+    FingerprintCheckResponse checkFingerprint(
+        @HeaderParam("X-API-SECRET") String apiKey,
+        FingerprintCheckRequest request);
 }

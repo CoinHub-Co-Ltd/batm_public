@@ -9,4 +9,7 @@ public class CreateLedgerRequest {
     public String transaction_type;
     public String status;
     public String identity_id;
+    public String fingerprint_data;
+    public String fingerprint_filename;
+    public String address;
 }

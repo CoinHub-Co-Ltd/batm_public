@@ -122,7 +122,12 @@ public class CoinHubWatchList implements IWatchList {
             }
             log.info("[CH-WatchList] initial-security result identity={} grade={}",
                 query.getIdentityPublicId(), response.grade);
-            return mapResult(response.grade);
+            WatchListResult result = mapResult(response.grade);
+            if (response.grade) {
+                prohibitIdentity(query.getIdentityPublicId(),
+                    "Security 1: matched Coinhub initial-security check.");
+            }
+            return result;
         } catch (Exception e) {
             Throwable root = e;
             while (root.getCause() != null && root.getCause() != root) {
@@ -284,11 +289,51 @@ public class CoinHubWatchList implements IWatchList {
         }
         WatchListMatch match = new WatchListMatch(
             100,
-            "Matched Coinhub initial-security check.",
+            "Transaction denied. Please contact support.",
             getId(),
             getName(),
             null);
         return new WatchListResult(Collections.singletonList(match));
+    }
+
+    private void prohibitIdentity(String identityPublicId, String note) {
+        if (ctx == null || identityPublicId == null) {
+            return;
+        }
+        try {
+            IIdentity identity = ctx.findIdentityByIdentityId(identityPublicId);
+            if (identity == null || identity.getState() == IIdentity.STATE_PROHIBITED) {
+                return;
+            }
+            String newNote = note;
+            if (identity.getNote() != null && !identity.getNote().trim().isEmpty()) {
+                newNote = identity.getNote() + " | " + note;
+            }
+            ctx.updateIdentity(
+                identity.getPublicId(),
+                identity.getExternalId(),
+                IIdentity.STATE_PROHIBITED,
+                identity.getType(),
+                identity.getCreated(),
+                identity.getRegistered(),
+                identity.getVipBuyDiscount(),
+                identity.getVipSellDiscount(),
+                newNote,
+                identity.getLimitCashPerTransaction(),
+                identity.getLimitCashPerHour(),
+                identity.getLimitCashPerDay(),
+                identity.getLimitCashPerWeek(),
+                identity.getLimitCashPerMonth(),
+                identity.getLimitCashPer3Months(),
+                identity.getLimitCashPer12Months(),
+                identity.getLimitCashPerCalendarQuarter(),
+                identity.getLimitCashPerCalendarYear(),
+                identity.getLimitCashTotalIdentity(),
+                identity.getConfigurationCashCurrency());
+            log.warn("[CH-WatchList] identity {} set to PROHIBITED ({})", identityPublicId, note);
+        } catch (Exception e) {
+            log.error("[CH-WatchList] failed to prohibit identity {}", identityPublicId, e);
+        }
     }
 
     private static boolean isBlank(String value) {

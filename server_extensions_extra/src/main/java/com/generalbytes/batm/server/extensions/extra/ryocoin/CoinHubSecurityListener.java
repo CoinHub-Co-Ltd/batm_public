@@ -3,6 +3,8 @@ package com.generalbytes.batm.server.extensions.extra.ryocoin;
 import com.generalbytes.batm.server.extensions.*;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.ICoinHubAPI;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintCheckRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
 import org.slf4j.Logger;
@@ -12,6 +14,7 @@ import si.mazi.rescu.RestProxyFactory;
 import java.math.BigDecimal;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.Base64;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
@@ -35,6 +38,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
 
     private final ICoinHubAPI api;
     private final String apiKey;
+    private final IExtensionContext ctx;
 
     public CoinHubSecurityListener(IExtensionContext ctx, String apiKey, String apiEndpoint) {
         this.apiKey = apiKey;
@@ -48,6 +52,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         this.amlDayCount = config(ctx, "sec22_aml_day_count", 8);
         this.amlLong = config(ctx, "sec22_aml_long", new BigDecimal("5600000"));
         this.amlLongCount = config(ctx, "sec22_aml_long_count", 56);
+        this.ctx = ctx;
     }
 
     private BigDecimal config(IExtensionContext ctx, String key, BigDecimal defaultValue) {
@@ -75,6 +80,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         if (prep.getType() != ITransactionPreparation.TYPE_BUY_CRYPTO) {
             return true;
         }
+        
         String currency = prep.getCryptoCurrency();
         String address = prep.getCryptoAddress();
         if (currency == null || address == null || address.trim().isEmpty()) {
@@ -85,6 +91,33 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
 
         String identityId = prep.getIdentityPublicId();
+        if (identityId != null && api != null && apiKey != null) {
+            String fingerprint = null;
+            IIdentity identity = ctx.findIdentityByIdentityId(identityId);
+            if (identity != null && identity.getIdentityPieces() != null) {
+                for (IIdentityPiece piece : identity.getIdentityPieces()) {
+                    if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT && piece.getData() != null) {
+                        fingerprint = Base64.getEncoder().encodeToString(piece.getData());
+                        break;
+                    }
+                }
+            }
+            if (fingerprint != null) {
+                try {
+                    FingerprintCheckResponse check = api.checkFingerprint(apiKey, new FingerprintCheckRequest(address, fingerprint));
+                    if (check != null && Boolean.FALSE.equals(check.allowed)) {
+                        log.warn("[Security] DENY prep identity={} address={} fingerprint conflict", identityId, address);
+                        prep.setErrorMessage("Transaction denied. Please contact support.");
+                        return false;
+                    }
+                } catch (Exception e) {
+                    log.error("[Security] fingerprint check failed identity={}", identityId, e);
+                    prep.setErrorMessage("Transaction limit check unavailable. Please try again later.");
+                    return false;
+                }
+            }
+        }
+
         if (identityId == null) {
             return true;
         }
@@ -176,6 +209,18 @@ public class CoinHubSecurityListener implements ITransactionListener {
             log.warn("[Security] ledger API not configured, skip create");
             return;
         }
+        byte[] fingerPrintBytes = null;
+        String fingerPrintFileName = null;
+        IIdentity identity = ctx.findIdentityByIdentityId(td.getIdentityPublicId());
+        if (identity != null && identity.getIdentityPieces() != null) {
+            for (IIdentityPiece piece : identity.getIdentityPieces()) {
+                if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT && piece.getData() != null) {
+                    fingerPrintBytes = piece.getData();
+                    fingerPrintFileName = piece.getFilename();
+                    break;
+                }
+            }
+        }
         CreateLedgerRequest request = new CreateLedgerRequest();
         String rid = td.getRemoteTransactionId() != null ? td.getRemoteTransactionId() : "";
         request.tx_id = rid;
@@ -184,6 +229,9 @@ public class CoinHubSecurityListener implements ITransactionListener {
         request.transaction_type = td.getType() == ITransactionDetails.TYPE_BUY_CRYPTO ? "CREDIT" : "DEBIT";
         request.status = String.valueOf(td.getStatus());
         request.identity_id = td.getIdentityPublicId();
+        request.fingerprint_data = fingerPrintBytes != null ? Base64.getEncoder().encodeToString(fingerPrintBytes) : null;
+        request.fingerprint_filename = fingerPrintFileName;
+        request.address = td.getCryptoAddress();
         LedgerEntry created = api.createLedgerTransaction(apiKey, request);
         log.info("[Security] ledger created tx_id={} identity={} entry={}", rid, request.identity_id, created);
     }
