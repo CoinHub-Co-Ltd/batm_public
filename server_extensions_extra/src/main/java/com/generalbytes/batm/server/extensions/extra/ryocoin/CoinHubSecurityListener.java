@@ -7,6 +7,7 @@ import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
+import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubAtmErrors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import si.mazi.rescu.RestProxyFactory;
@@ -33,6 +34,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
     private final BigDecimal calcLong;
     private final BigDecimal amlDay;
     private final int amlDayCount;
+    private final BigDecimal aml90;
     private final BigDecimal amlLong;
     private final int amlLongCount;
 
@@ -50,6 +52,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         this.calcLong = config(ctx, "sec22_calc_long", new BigDecimal("3000000"));
         this.amlDay = config(ctx, "sec22_aml_day", new BigDecimal("800000"));
         this.amlDayCount = config(ctx, "sec22_aml_day_count", 8);
+        this.aml90 = config(ctx, "sec22_aml_90", new BigDecimal("1500000"));
         this.amlLong = config(ctx, "sec22_aml_long", new BigDecimal("5600000"));
         this.amlLongCount = config(ctx, "sec22_aml_long_count", 56);
         this.ctx = ctx;
@@ -86,7 +89,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         if (currency == null || address == null || address.trim().isEmpty()) {
             log.warn("[Security] DENY prep localTxId={} missing crypto/address currency={} address={}",
                 prep.getLocalTransactionId(), currency, address);
-            prep.setErrorMessage("Crypto currency or destination address is missing.");
+            prep.setErrorMessage(CoinHubAtmErrors.S2_MISSING_ADDRESS);
             return false;
         }
 
@@ -107,12 +110,12 @@ public class CoinHubSecurityListener implements ITransactionListener {
                     FingerprintCheckResponse check = api.checkFingerprint(apiKey, new FingerprintCheckRequest(address, fingerprint));
                     if (check != null && Boolean.FALSE.equals(check.allowed)) {
                         log.warn("[Security] DENY prep identity={} address={} fingerprint conflict", identityId, address);
-                        prep.setErrorMessage("Transaction denied. Please contact support.");
+                        prep.setErrorMessage(CoinHubAtmErrors.S2_FINGERPRINT_DENIED);
                         return false;
                     }
                 } catch (Exception e) {
                     log.error("[Security] fingerprint check failed identity={}", identityId, e);
-                    prep.setErrorMessage("Transaction limit check unavailable. Please try again later.");
+                    prep.setErrorMessage(CoinHubAtmErrors.S2_FINGERPRINT_UNAVAILABLE);
                     return false;
                 }
             }
@@ -123,7 +126,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
-            prep.setErrorMessage("Transaction limit check unavailable. Please try again later.");
+            prep.setErrorMessage(CoinHubAtmErrors.S2_LEDGER_UNAVAILABLE);
             return false;
         }
         if (noBuyInLastYear(ledger)) {
@@ -132,14 +135,14 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         if (exceedThreeHours(ledger, BigDecimal.ZERO)) {
             log.warn("[Security] DENY prep identity={} ledger >= {} within 3 hours", identityId, max3Hours);
-            prep.setErrorMessage("Transaction limit exceeded. Please try again later.");
+            prep.setErrorMessage(CoinHubAtmErrors.S2_LIMIT_TRY_LATER);
             return false;
         }
-        if (exceedCalculation(ledger, BigDecimal.ZERO)) {
-            log.warn("[Security] DENY prep identity={} ledger over rolling limits", identityId);
-            prep.setErrorMessage("Transaction limit exceeded. Please contact support.");
-            return false;
-        }
+        // if (exceedCalculation(ledger, BigDecimal.ZERO)) {
+        //     log.warn("[Security] DENY prep identity={} ledger over rolling limits", identityId);
+        //     prep.setErrorMessage(CoinHubAtmErrors.S2_LIMIT_EXCEEDED);
+        //     return false;
+        // }
         return true;
     }
 
@@ -156,7 +159,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
             return true;
         }
         if (amount.compareTo(maxPerTx) > 0) {
-            return deny(request, "Maximum " + maxPerTx + " JPY per transaction exceeded.");
+            return deny(request, CoinHubAtmErrors.s2MaxPerTx(maxPerTx.toPlainString()));
         }
         String identityId = request.getIdentityPublicId();
         if (identityId == null) {
@@ -164,16 +167,16 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
-            return deny(request, "Transaction limit check unavailable. Please try again later.");
+            return deny(request, CoinHubAtmErrors.S2_LEDGER_UNAVAILABLE);
         }
         if (noBuyInLastYear(ledger)) {
             return true;
         }
         if (exceedThreeHours(ledger, amount)) {
-            return deny(request, "Transaction limit exceeded. Please try again later.");
+            return deny(request, CoinHubAtmErrors.S2_LIMIT_TRY_LATER);
         }
         if (exceedCalculation(ledger, amount) || exceedsAml(ledger, amount)) {
-            return deny(request, "Transaction limit exceeded. Please contact support.");
+            return deny(request, CoinHubAtmErrors.S2_LIMIT_EXCEEDED);
         }
         return true;
     }
@@ -292,6 +295,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
     private boolean exceedsAml(List<LedgerEntry> ledger, BigDecimal current) {
         boolean dayFail = sumInWindow(ledger, 1).add(current).compareTo(amlDay) > 0
             || countInWindow(ledger, 1) + 1 > amlDayCount;
+        boolean days90Fail = sumInWindow(ledger, 90).add(current).compareTo(aml90) > 0;
         boolean longFail = sumInWindow(ledger, 7).add(current).compareTo(amlLong) > 0
             || countInWindow(ledger, 7) + 1 > amlLongCount
             || sumInWindow(ledger, 30).add(current).compareTo(amlLong) > 0
@@ -300,7 +304,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
             || countInWindow(ledger, 180) + 1 > amlLongCount
             || sumInWindow(ledger, 365).add(current).compareTo(amlLong) > 0
             || countInWindow(ledger, 365) + 1 > amlLongCount;
-        return dayFail || longFail;
+        return dayFail || days90Fail || longFail;
     }
 
     private BigDecimal sumInHours(List<LedgerEntry> ledger, int hours) {
@@ -343,7 +347,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
     }
 
     private boolean isCountable(LedgerEntry entry, Date from) {
-        if (entry == null || !isCredit(entry)) {
+        if (entry == null || !(isCredit(entry) || isDebit(entry))) {
             return false;
         }
         Date created = parseDate(entry.created_at);
@@ -358,6 +362,16 @@ public class CoinHubSecurityListener implements ITransactionListener {
         return "CREDIT".equalsIgnoreCase(type)
             || "BUY_CRYPTO".equalsIgnoreCase(type)
             || "BUY".equalsIgnoreCase(type);
+    }
+
+    private boolean isDebit(LedgerEntry entry) {
+        if (entry == null || entry.transaction_type == null) {
+            return false;
+        }
+        String type = entry.transaction_type.trim();
+        return "DEBIT".equalsIgnoreCase(type)
+            || "SELL_CRYPTO".equalsIgnoreCase(type)
+            || "SELL".equalsIgnoreCase(type);
     }
 
     private Date parseDate(String value) {

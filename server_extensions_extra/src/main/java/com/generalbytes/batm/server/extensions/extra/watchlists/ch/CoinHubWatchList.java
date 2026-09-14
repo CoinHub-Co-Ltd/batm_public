@@ -38,7 +38,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +56,9 @@ public class CoinHubWatchList implements IWatchList {
     private final String apiKey;
     private IExtensionContext ctx;
 
+    private static final Set<String> checkedDobKeys = ConcurrentHashMap.newKeySet();
+    private static final Map<String, String> deniedByIdentity = new ConcurrentHashMap<>();
+
     public CoinHubWatchList(String apiKey, String apiEndpoint) {
         this.apiKey = apiKey;
         this.api = RestProxyFactory.createProxy(ICoinHubWatchListAPI.class, apiEndpoint);
@@ -60,6 +66,13 @@ public class CoinHubWatchList implements IWatchList {
 
     public void setExtensionContext(IExtensionContext ctx) {
         this.ctx = ctx;
+    }
+
+    public String getDeniedMessage(String identityPublicId) {
+        if (identityPublicId == null) {
+            return null;
+        }
+        return deniedByIdentity.get(identityPublicId);
     }
 
     @Override
@@ -99,49 +112,89 @@ public class CoinHubWatchList implements IWatchList {
 
     @Override
     public WatchListResult search(WatchListQuery query) {
+        return doSearch(query, false);
+    }
+
+    public WatchListResult searchForTransactionGate(WatchListQuery query) {
+        return doSearch(query, true);
+    }
+
+    private WatchListResult doSearch(WatchListQuery query, boolean forceIfUnchecked) {
         try {
+            String identityId = query.getIdentityPublicId();
+            String priorDeny = getDeniedMessage(identityId);
+            if (priorDeny != null) {
+                log.warn("[CH-WatchList] identity {} already denied by Security1 — blocking", identityId);
+                return deny(priorDeny);
+            }
+
             WatchlistSearchRequest request = mapRequest(query);
-            String missingFields = getMissingRequiredFields(request);
-            if (missingFields != null) {
-                log.info("[CH-WatchList] Skipping CoinHub check for identity {} — missing: {} (wait for DOB step)",
-                    query.getIdentityPublicId(), missingFields);
-                return new WatchListResult(Collections.emptyList());
+
+            if (forceIfUnchecked) {
+                String missing = getMissingRequiredFields(request);
+                if (missing != null) {
+                    log.info("[CH-WatchList] transaction gate skip identity={} missing={}", identityId, missing);
+                    return new WatchListResult(Collections.emptyList());
+                }
+                return callInitialSecurity(request, "transaction-prep");
             }
 
-            WatchlistSearchRequest apiRequest = new WatchlistSearchRequest();
-            apiRequest.firstName = request.firstName;
-            apiRequest.lastName = request.lastName;
-            apiRequest.birthOfDate = request.birthOfDate;
-            apiRequest.identityPublicId = request.identityPublicId;
-
-            log.info("[CH-WatchList] Calling initial-security identity={} firstName={} lastName={} dob={}",
-                query.getIdentityPublicId(), apiRequest.firstName, apiRequest.lastName, apiRequest.birthOfDate);
-            WatchlistSearchResponse response = api.searchWatchlist(apiKey, apiRequest);
-            if (response == null || response.grade == null) {
-                return deny("CoinHub watchlist unavailable (empty response)");
-            }
-            log.info("[CH-WatchList] initial-security result identity={} grade={}",
-                query.getIdentityPublicId(), response.grade);
-            WatchListResult result = mapResult(response.grade);
-            if (response.grade) {
-                prohibitIdentity(query.getIdentityPublicId(),
-                    "Security 1: matched Coinhub initial-security check.");
-            }
-            return result;
+            log.info("[CH-WatchList] name-step skip identity={} — wait for transaction prep", identityId);
+            return new WatchListResult(WatchListResult.RESULT_TYPE_WATCHLIST_NOT_READY);
         } catch (Exception e) {
-            Throwable root = e;
-            while (root.getCause() != null && root.getCause() != root) {
-                root = root.getCause();
-            }
-            String detail = root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName();
-            if (root instanceof si.mazi.rescu.HttpStatusIOException) {
-                si.mazi.rescu.HttpStatusIOException http = (si.mazi.rescu.HttpStatusIOException) root;
-                detail = "HTTP " + http.getHttpStatusCode() + " body=" + http.getHttpBody();
-            }
-            log.error("CoinHub watchlist search failed identity={} detail={}",
-                query.getIdentityPublicId(), detail, e);
-            return deny("CoinHub watchlist unavailable: " + detail);
+            return handleSearchException(query, e);
         }
+    }
+
+    private WatchListResult callInitialSecurity(WatchlistSearchRequest request, String reason) {
+        String identityId = request.identityPublicId;
+        String dob = request.birthOfDate;
+        String checkKey = identityId + "|" + dob;
+
+        String priorDeny = getDeniedMessage(identityId);
+        if (priorDeny != null) {
+            log.warn("[CH-WatchList] identity {} already denied — blocking", identityId);
+            return deny(priorDeny);
+        }
+
+        if (checkedDobKeys.contains(checkKey)) {
+            log.info("[CH-WatchList] already checked identity={} dob={} — pass", identityId, dob);
+            return new WatchListResult(Collections.emptyList());
+        }
+
+        log.info("[CH-WatchList] Calling initial-security identity={} firstName={} lastName={} dob={} reason={}",
+            identityId, request.firstName, request.lastName, dob, reason);
+
+        WatchlistSearchResponse response = api.searchWatchlist(apiKey, request);
+        if (response == null || response.grade == null) {
+            return deny(CoinHubAtmErrors.S1_UNAVAILABLE);
+        }
+        log.info("[CH-WatchList] initial-security result identity={} grade={}",
+            identityId, response.grade);
+        checkedDobKeys.add(checkKey);
+        WatchListResult result = mapResult(response.grade);
+        if (Boolean.TRUE.equals(response.grade)) {
+            String denyMessage = CoinHubAtmErrors.S1_BLACKLISTED;
+            deniedByIdentity.put(identityId, denyMessage);
+            log.warn("[CH-WatchList] grade=true — deny cached for identity={}", identityId);
+            // prohibitIdentity(identityId, "Security 1: matched Coinhub initial-security check.");
+        }
+        return result;
+    }
+
+    private WatchListResult handleSearchException(WatchListQuery query, Exception e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String detail = root.getMessage() != null ? root.getMessage() : root.getClass().getSimpleName();
+        if (root instanceof si.mazi.rescu.HttpStatusIOException) {
+            si.mazi.rescu.HttpStatusIOException http = (si.mazi.rescu.HttpStatusIOException) root;
+            detail = "HTTP " + http.getHttpStatusCode() + " body=" + http.getHttpBody();
+        }
+        log.error("CoinHub watchlist search failed identity={} detail={}",
+            query.getIdentityPublicId(), detail, e);
+        return deny(CoinHubAtmErrors.s1UnavailableDetail(detail));
     }
 
     private WatchListResult deny(String reason) {
@@ -270,10 +323,8 @@ public class CoinHubWatchList implements IWatchList {
                     request.occupation = piece.getOccupation();
                 }
             }
-            if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT
-                    && piece.getData() != null) {
-                request.fingerprint = java.util.Base64.getEncoder().encodeToString(piece.getData());
-            }
+            // Fingerprint is intentionally omitted: Security1 matches on name/DOB only.
+            // Address ↔ fingerprint is enforced separately in Security2.
         }
     }
 
@@ -289,7 +340,7 @@ public class CoinHubWatchList implements IWatchList {
         }
         WatchListMatch match = new WatchListMatch(
             100,
-            "Transaction denied. Please contact support.",
+            CoinHubAtmErrors.S1_BLACKLISTED,
             getId(),
             getName(),
             null);
