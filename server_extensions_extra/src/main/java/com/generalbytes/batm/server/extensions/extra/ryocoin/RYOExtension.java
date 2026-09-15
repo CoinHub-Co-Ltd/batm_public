@@ -29,6 +29,8 @@ import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.respons
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.TransactionFeesResponse;
 import com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.CoinHubJPExchange;
 import com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.CoinHubJPFeeTransactionListener;
+import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubSecurity1Listener;
+import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubWatchList;
 import com.generalbytes.batm.server.extensions.IExtensionContext;
 import com.generalbytes.batm.server.extensions.ITerminal;
 
@@ -69,6 +71,18 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
         ctx.addTerminalListener(this);
         notificationListener = new CoinHubNotificationListener();
         ctx.addNotificationListener(notificationListener);
+
+        CoinHubSecurityListener securityListener = new CoinHubSecurityListener(ctx, apiKey, chEndpoint);
+        ctx.addTransactionListener(securityListener);
+
+        if (apiKey != null && chEndpoint != null) {
+            CoinHubWatchList security1WatchList = new CoinHubWatchList(apiKey, chEndpoint);
+            security1WatchList.setExtensionContext(ctx);
+            ctx.addTransactionListener(new CoinHubSecurity1Listener(ctx, security1WatchList));
+            log.info("[Security1] listener registered endpoint={}", chEndpoint);
+        } else {
+            log.warn("[Security1] listener NOT registered (missing coinhub api_key/api_endpoint)");
+        }
     }
 
     @Override

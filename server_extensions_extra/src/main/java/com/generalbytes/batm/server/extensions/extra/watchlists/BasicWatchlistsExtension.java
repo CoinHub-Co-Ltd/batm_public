@@ -48,6 +48,8 @@ public class BasicWatchlistsExtension extends AbstractExtension{
         }
 
         if (apiKey != null && apiEndpoint != null) {
+            // Watchlist only for CAS AML identity checks.
+            // Security1 transaction listener is registered from RYOExtension (same place as Security2).
             coinHubWatchList = new CoinHubWatchList(apiKey, apiEndpoint);
             coinHubWatchList.setExtensionContext(ctx);
         }
