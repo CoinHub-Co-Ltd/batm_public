@@ -48,6 +48,8 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
     private static final Logger log = LoggerFactory.getLogger(RYOExtension.class);
     private String chEndpoint = "http://api.coinhubportal.test";
     private String apiKey = "apitest";
+    private String chEndpointDev = "http://api.coinhubportal.test";
+    private String apiKeyDev = "apitest";
     private ICoinHubAPI coinHubApi;
     /**
      * Used by {@link CoinHubRestService} and other integration points that need CAS APIs without an instance reference.
@@ -64,6 +66,11 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
         if (ctx.configFileExists("coinhub")) {
             apiKey = ctx.getConfigProperty("coinhub", "api_key", null);
             chEndpoint = ctx.getConfigProperty("coinhub", "api_endpoint", null);
+            // test env
+            chEndpointDev = ctx.getConfigProperty("coinhub", "api_endpoint_dev", null);
+            apiKeyDev = ctx.getConfigProperty("coinhub", "api_key_dev", null);
+
+
         }
         coinHubApi = RestProxyFactory.createProxy(ICoinHubAPI.class, chEndpoint);
         CoinHubJPFeeTransactionListener feeListener = new CoinHubJPFeeTransactionListener(ctx, apiKey, chEndpoint);
@@ -143,6 +150,21 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
                 log.info("Creating CoinHub exchange as wallet with terminalSerialNumber: {}", terminalSerialNumber);
                 return exchange;
             }
+
+            if ("coinhubjp-dev".equalsIgnoreCase(walletType)) {
+                String secretKey = null;
+                String terminalSerialNumber = "COINHUB-ATM";
+                if (ctx != null) {
+                    List<ITerminal> terminals = ctx.findAllTerminals();
+                    if (terminals != null && !terminals.isEmpty()) {
+                        terminalSerialNumber = terminals.get(0).getSerialNumber();
+                    }
+                }
+                CoinHubJPExchange exchange = new CoinHubJPExchange(apiKeyDev, secretKey, terminalSerialNumber, chEndpointDev);
+                exchange.setExtensionContext(ctx);
+                log.info("[DEV] Creating CoinHub exchange as wallet with terminalSerialNumber: {}", terminalSerialNumber);
+                return exchange;
+            }
         }
         } catch (Exception e) {
             ExtensionsUtil.logExtensionParamsException("createWallet", getClass().getSimpleName(), walletLogin, e);
@@ -168,6 +190,9 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
                 if ("coinhubratesource".equalsIgnoreCase(exchangeType)) {
                     String preferedFiatCurrency = FiatCurrency.JPY.getCode();
                     return new CoinHubRateSource(preferedFiatCurrency, apiKey, chEndpoint);
+                } else if ("coinhubratesource-dev".equalsIgnoreCase(exchangeType)) {
+                    String preferedFiatCurrency = FiatCurrency.JPY.getCode();
+                    return new CoinHubRateSource(preferedFiatCurrency, apiKeyDev, chEndpointDev);
                 }
             } catch (Exception e) {
                 ExtensionsUtil.logExtensionParamsException("createRateSource", getClass().getSimpleName(), sourceLogin, e);
@@ -209,6 +234,20 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
                         }
                     }
                     CoinHubJPExchange exchange = new CoinHubJPExchange(apiKey, secretKey, terminalSerialNumber, chEndpoint);
+                    exchange.setExtensionContext(ctx);
+                    return exchange;
+                } else if ("coinhubjp-dev".equalsIgnoreCase(prefix)) {
+                    // String apiKey = ctx.getConfigProperty("coinhub", "api_key", "default_key");
+                    String secretKey = null;
+                    // Get the serial number from the first terminal in the context
+                    String terminalSerialNumber = "COINHUB-ATM";
+                    if (ctx != null) {
+                        List<ITerminal> terminals = ctx.findAllTerminals();
+                        if (terminals != null && !terminals.isEmpty()) {
+                            terminalSerialNumber = terminals.get(0).getSerialNumber();
+                        }
+                    }
+                    CoinHubJPExchange exchange = new CoinHubJPExchange(apiKeyDev, secretKey, terminalSerialNumber, chEndpointDev);
                     exchange.setExtensionContext(ctx);
                     return exchange;
                 }
