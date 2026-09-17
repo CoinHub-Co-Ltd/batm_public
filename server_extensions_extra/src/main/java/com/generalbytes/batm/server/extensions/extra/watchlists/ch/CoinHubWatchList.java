@@ -167,15 +167,14 @@ public class CoinHubWatchList implements IWatchList {
 
         WatchlistSearchResponse response = api.searchWatchlist(apiKey, request);
         if (response == null || response.grade == null) {
-            return deny(CoinHubAtmErrors.S1_UNAVAILABLE);
+            return deny(CoinHubAtmErrors.CODE_S1_UNAVAILABLE);
         }
         log.info("[CH-WatchList] initial-security result identity={} grade={}",
             identityId, response.grade);
         checkedDobKeys.add(checkKey);
         WatchListResult result = mapResult(response.grade);
         if (Boolean.TRUE.equals(response.grade)) {
-            String denyMessage = CoinHubAtmErrors.S1_BLACKLISTED;
-            deniedByIdentity.put(identityId, denyMessage);
+            deniedByIdentity.put(identityId, CoinHubAtmErrors.CODE_S1_BLACKLISTED);
             log.warn("[CH-WatchList] grade=true — deny cached for identity={}", identityId);
             // prohibitIdentity(identityId, "Security 1: matched Coinhub initial-security check.");
         }
@@ -194,7 +193,8 @@ public class CoinHubWatchList implements IWatchList {
         }
         log.error("CoinHub watchlist search failed identity={} detail={}",
             query.getIdentityPublicId(), detail, e);
-        return deny(CoinHubAtmErrors.s1UnavailableDetail(detail));
+        // Customer sees localized CODE_S1_UNAVAILABLE; technical detail stays in logs only.
+        return deny(CoinHubAtmErrors.CODE_S1_UNAVAILABLE);
     }
 
     private WatchListResult deny(String reason) {
@@ -340,7 +340,7 @@ public class CoinHubWatchList implements IWatchList {
         }
         WatchListMatch match = new WatchListMatch(
             100,
-            CoinHubAtmErrors.S1_BLACKLISTED,
+            CoinHubAtmErrors.CODE_S1_BLACKLISTED,
             getId(),
             getName(),
             null);

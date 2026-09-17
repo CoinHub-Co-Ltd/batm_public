@@ -20,9 +20,11 @@ package com.generalbytes.batm.server.extensions.extra.ryocoin.sources;
 
 import java.math.BigDecimal;
 
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateCustomerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintCheckRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.TransactionFeesRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.CreateCustomerResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
@@ -93,4 +95,12 @@ public interface ICoinHubAPI {
     FingerprintCheckResponse checkFingerprint(
         @HeaderParam("X-API-SECRET") String apiKey,
         FingerprintCheckRequest request);
+
+    @POST
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    @Path("/service/customers/create")
+    CreateCustomerResponse saveCustomer(
+        @HeaderParam("X-API-SECRET") String apiKey,
+        CreateCustomerRequest request);
 }

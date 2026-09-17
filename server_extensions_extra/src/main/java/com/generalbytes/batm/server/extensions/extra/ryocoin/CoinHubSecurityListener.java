@@ -1,9 +1,16 @@
 package com.generalbytes.batm.server.extensions.extra.ryocoin;
 
 import com.generalbytes.batm.server.extensions.*;
+import com.generalbytes.batm.server.extensions.customfields.CustomField;
+import com.generalbytes.batm.server.extensions.customfields.CustomFieldDefinition;
+import com.generalbytes.batm.server.extensions.customfields.value.ChoiceCustomFieldValue;
+import com.generalbytes.batm.server.extensions.customfields.value.CustomFieldValue;
+import com.generalbytes.batm.server.extensions.customfields.value.StringCustomFieldValue;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.ICoinHubAPI;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateCustomerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintCheckRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.CreateCustomerResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
@@ -23,6 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class CoinHubSecurityListener implements ITransactionListener {
     private static final Logger log = LoggerFactory.getLogger(CoinHubSecurityListener.class);
@@ -41,6 +49,8 @@ public class CoinHubSecurityListener implements ITransactionListener {
     private final ICoinHubAPI api;
     private final String apiKey;
     private final IExtensionContext ctx;
+    /** Language from prep (ITransactionRequest has no getLanguage). Keyed by identity or terminal. */
+    private final Map<String, String> languageByKey = new ConcurrentHashMap<>();
 
     public CoinHubSecurityListener(IExtensionContext ctx, String apiKey, String apiEndpoint) {
         this.apiKey = apiKey;
@@ -83,13 +93,15 @@ public class CoinHubSecurityListener implements ITransactionListener {
         if (prep.getType() != ITransactionPreparation.TYPE_BUY_CRYPTO) {
             return true;
         }
-        
+
+        String language = rememberLanguage(prep.getIdentityPublicId(), prep.getTerminalSerialNumber(), prep.getLanguage());
+
         String currency = prep.getCryptoCurrency();
         String address = prep.getCryptoAddress();
         if (currency == null || address == null || address.trim().isEmpty()) {
             log.warn("[Security] DENY prep localTxId={} missing crypto/address currency={} address={}",
                 prep.getLocalTransactionId(), currency, address);
-            prep.setErrorMessage(CoinHubAtmErrors.S2_MISSING_ADDRESS);
+            prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_MISSING_ADDRESS, language));
             return false;
         }
 
@@ -110,12 +122,12 @@ public class CoinHubSecurityListener implements ITransactionListener {
                     FingerprintCheckResponse check = api.checkFingerprint(apiKey, new FingerprintCheckRequest(address, fingerprint));
                     if (check != null && Boolean.FALSE.equals(check.allowed)) {
                         log.warn("[Security] DENY prep identity={} address={} fingerprint conflict", identityId, address);
-                        prep.setErrorMessage(CoinHubAtmErrors.S2_FINGERPRINT_DENIED);
+                        prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_FINGERPRINT_DENIED, language));
                         return false;
                     }
                 } catch (Exception e) {
                     log.error("[Security] fingerprint check failed identity={}", identityId, e);
-                    prep.setErrorMessage(CoinHubAtmErrors.S2_FINGERPRINT_UNAVAILABLE);
+                    prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_FINGERPRINT_UNAVAILABLE, language));
                     return false;
                 }
             }
@@ -126,7 +138,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
-            prep.setErrorMessage(CoinHubAtmErrors.S2_LEDGER_UNAVAILABLE);
+            prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LEDGER_UNAVAILABLE, language));
             return false;
         }
         if (noBuyInLastYear(ledger)) {
@@ -135,12 +147,12 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         if (exceedThreeHours(ledger, BigDecimal.ZERO)) {
             log.warn("[Security] DENY prep identity={} ledger >= {} within 3 hours", identityId, max3Hours);
-            prep.setErrorMessage(CoinHubAtmErrors.S2_LIMIT_TRY_LATER);
+            prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
             return false;
         }
         // if (exceedCalculation(ledger, BigDecimal.ZERO)) {
         //     log.warn("[Security] DENY prep identity={} ledger over rolling limits", identityId);
-        //     prep.setErrorMessage(CoinHubAtmErrors.S2_LIMIT_EXCEEDED);
+        //     prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
         //     return false;
         // }
         return true;
@@ -151,6 +163,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         if (request.getType() != ITransactionRequest.TYPE_BUY_CRYPTO) {
             return true;
         }
+        String language = languageFor(request.getIdentityPublicId(), request.getTerminalSerialNumber());
         BigDecimal amount = request.getCashAmount();
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
             return true;
@@ -159,7 +172,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
             return true;
         }
         if (amount.compareTo(maxPerTx) > 0) {
-            return deny(request, CoinHubAtmErrors.s2MaxPerTx(maxPerTx.toPlainString()));
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_MAX_PER_TX, language, maxPerTx.toPlainString()));
         }
         String identityId = request.getIdentityPublicId();
         if (identityId == null) {
@@ -167,32 +180,64 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
-            return deny(request, CoinHubAtmErrors.S2_LEDGER_UNAVAILABLE);
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LEDGER_UNAVAILABLE, language));
         }
         if (noBuyInLastYear(ledger)) {
             return true;
         }
         if (exceedThreeHours(ledger, amount)) {
-            return deny(request, CoinHubAtmErrors.S2_LIMIT_TRY_LATER);
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
         }
         if (exceedCalculation(ledger, amount) || exceedsAml(ledger, amount)) {
-            return deny(request, CoinHubAtmErrors.S2_LIMIT_EXCEEDED);
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
         }
         return true;
     }
 
+    private String rememberLanguage(String identityId, String terminalSerial, String language) {
+        String normalized = CoinHubAtmErrors.normalizeLanguage(language);
+        if (identityId != null && !identityId.trim().isEmpty()) {
+            languageByKey.put(identityId, normalized);
+        }
+        if (terminalSerial != null && !terminalSerial.trim().isEmpty()) {
+            languageByKey.put(terminalSerial, normalized);
+        }
+        return normalized;
+    }
+
+    private String languageFor(String identityId, String terminalSerial) {
+        if (identityId != null) {
+            String lang = languageByKey.get(identityId);
+            if (lang != null) {
+                return lang;
+            }
+        }
+        if (terminalSerial != null) {
+            String lang = languageByKey.get(terminalSerial);
+            if (lang != null) {
+                return lang;
+            }
+        }
+        return "en";
+    }
+
     @Override
     public Map<String, String> onTransactionUpdated(ITransactionDetails td) {
+        if (td == null || td.getIdentityPublicId() == null) {
+            return new HashMap<>();
+        }
+        // if (!isCompletedBuyOrSell(td)) {
+        //     return new HashMap<>();
+        // }
         try {
-            if (td == null || td.getIdentityPublicId() == null) {
-                return new HashMap<>();
-            }
-            // if (!isCompletedBuyOrSell(td)) {
-            //     return new HashMap<>();
-            // }
             createLedgerTransaction(td);
         } catch (Exception e) {
-            log.error("[Security] createLedger failed rid={}", td != null ? td.getRemoteTransactionId() : null, e);
+            log.error("[Security] createLedger failed rid={}", td.getRemoteTransactionId(), e);
+        }
+        try {
+            saveCustomer(td.getIdentityPublicId());
+        } catch (Exception e) {
+            log.error("[Security] saveCustomer failed rid={}", td.getRemoteTransactionId(), e);
         }
         return new HashMap<>();
     }
@@ -237,6 +282,151 @@ public class CoinHubSecurityListener implements ITransactionListener {
         request.address = td.getCryptoAddress();
         LedgerEntry created = api.createLedgerTransaction(apiKey, request);
         log.info("[Security] ledger created tx_id={} identity={} entry={}", rid, request.identity_id, created);
+    }
+
+    private void saveCustomer(String identityId) {
+        if (api == null || apiKey == null || identityId == null) {
+            log.warn("[Security] customer API not configured, skip save");
+            return;
+        }
+        CreateCustomerRequest request = buildCustomerRequest(identityId);
+        if (request == null) {
+            log.warn("[Security] skip saveCustomer identity={} — missing required fields", identityId);
+            return;
+        }
+        try {
+            CreateCustomerResponse response = api.saveCustomer(apiKey, request);
+            log.info("[Security] customer saved identity={} status={} firstName={} lastName={} dob={}",
+                identityId,
+                response != null ? response.status : null,
+                request.firstName,
+                request.lastName,
+                request.birthOfDate);
+        } catch (Exception e) {
+            log.error("[Security] saveCustomer failed identity={}", identityId, e);
+        }
+    }
+
+    private CreateCustomerRequest buildCustomerRequest(String identityId) {
+        IIdentity identity = ctx.findIdentityByIdentityId(identityId);
+        if (identity == null || identity.getIdentityPieces() == null) {
+            return null;
+        }
+
+        CreateCustomerRequest request = new CreateCustomerRequest();
+        for (IIdentityPiece piece : identity.getIdentityPieces()) {
+            if (piece.getPieceType() == IIdentityPiece.TYPE_EMAIL && piece.getEmailAddress() != null) {
+                request.email = piece.getEmailAddress();
+            }
+            if (piece.getPieceType() == IIdentityPiece.TYPE_CELLPHONE && piece.getPhoneNumber() != null) {
+                request.phone = piece.getPhoneNumber();
+            }
+            if (piece.getPieceType() == IIdentityPiece.TYPE_PERSONAL_INFORMATION) {
+                if (isBlank(request.firstName) && piece.getFirstname() != null) {
+                    request.firstName = piece.getFirstname();
+                }
+                if (isBlank(request.lastName) && piece.getLastname() != null) {
+                    request.lastName = piece.getLastname();
+                }
+                if (isBlank(request.birthOfDate) && piece.getDateOfBirth() != null) {
+                    request.birthOfDate = formatDob(piece.getDateOfBirth());
+                }
+                if (isBlank(request.country)) {
+                    if (!isBlank(piece.getContactCountryIso2())) {
+                        request.country = piece.getContactCountryIso2();
+                    } else if (!isBlank(piece.getIssuingJurisdictionCountry())) {
+                        request.country = piece.getIssuingJurisdictionCountry();
+                    } else if (!isBlank(piece.getContactCountry())) {
+                        request.country = piece.getContactCountry();
+                    }
+                }
+                if (isBlank(request.address) && !isBlank(piece.getContactAddress())) {
+                    request.address = piece.getContactAddress();
+                }
+                if (isBlank(request.occupation) && !isBlank(piece.getOccupation())) {
+                    request.occupation = piece.getOccupation();
+                }
+            }
+        }
+
+        fillCustomerCustomFields(request, identityId);
+
+        if (isBlank(request.firstName) || isBlank(request.lastName)
+                || isBlank(request.birthOfDate) || isBlank(request.country)) {
+            return null;
+        }
+        return request;
+    }
+
+    private void fillCustomerCustomFields(CreateCustomerRequest request, String identityId) {
+        try {
+            for (CustomField field : ctx.getIdentityCustomFields(identityId)) {
+                String name = field.getDefinition().getName();
+                if (name == null) {
+                    continue;
+                }
+                String value = getFieldValue(field);
+                if (isBlank(value)) {
+                    continue;
+                }
+                switch (name) {
+                    case "Address":
+                        if (isBlank(request.address)) {
+                            request.address = value;
+                        }
+                        break;
+                    case "Contact Number":
+                        if (isBlank(request.phone)) {
+                            request.phone = value;
+                        }
+                        break;
+                    case "Occupation":
+                    case "occupation":
+                        if (isBlank(request.occupation)) {
+                            request.occupation = value;
+                        }
+                        break;
+                    case "Purpose":
+                        if (isBlank(request.purpose)) {
+                            request.purpose = value;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("[Security] Could not read custom fields for identity {}", identityId, e);
+        }
+    }
+
+    private static String getFieldValue(CustomField field) {
+        CustomFieldValue value = field.getValue();
+        if (value instanceof StringCustomFieldValue) {
+            return ((StringCustomFieldValue) value).getStringValue();
+        }
+        if (value instanceof ChoiceCustomFieldValue) {
+            if (field.getDefinition().getElements() == null) {
+                return null;
+            }
+            long choiceId = ((ChoiceCustomFieldValue) value).getChoiceId();
+            for (CustomFieldDefinition.Element element : field.getDefinition().getElements()) {
+                if (element.getId() == choiceId) {
+                    return element.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String formatDob(Date date) {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd");
+        format.setTimeZone(TimeZone.getTimeZone("Asia/Tokyo"));
+        return format.format(date);
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     private List<LedgerEntry> getLedger(String identityId) {

@@ -12,11 +12,16 @@ import com.generalbytes.batm.server.extensions.watchlist.WatchListResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class CoinHubSecurity1Listener implements ITransactionListener {
     private static final Logger log = LoggerFactory.getLogger(CoinHubSecurity1Listener.class);
 
     private final IExtensionContext ctx;
     private final CoinHubWatchList watchList;
+    /** Language from prep (ITransactionRequest has no getLanguage). Keyed by identity or terminal. */
+    private final Map<String, String> languageByKey = new ConcurrentHashMap<>();
 
     public CoinHubSecurity1Listener(IExtensionContext ctx, CoinHubWatchList watchList) {
         this.ctx = ctx;
@@ -25,9 +30,10 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
 
     @Override
     public boolean isTransactionPreparationApproved(ITransactionPreparation prep) {
-        log.info("[Security1] prep check identity={} type={}",
-            prep.getIdentityPublicId(), prep.getType());
-        String message = findDenyMessage(prep.getIdentityPublicId());
+        String language = rememberLanguage(prep.getIdentityPublicId(), prep.getTerminalSerialNumber(), prep.getLanguage());
+        log.info("[Security1] prep check identity={} type={} lang={}",
+            prep.getIdentityPublicId(), prep.getType(), language);
+        String message = findDenyMessage(prep.getIdentityPublicId(), language);
         if (message == null) {
             log.info("[Security1] prep ALLOW identity={}", prep.getIdentityPublicId());
             return true;
@@ -39,9 +45,10 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
 
     @Override
     public boolean isTransactionApproved(ITransactionRequest request) {
-        log.info("[Security1] approve check identity={} type={}",
-            request.getIdentityPublicId(), request.getType());
-        String message = findDenyMessage(request.getIdentityPublicId());
+        String language = languageFor(request.getIdentityPublicId(), request.getTerminalSerialNumber());
+        log.info("[Security1] approve check identity={} type={} lang={}",
+            request.getIdentityPublicId(), request.getType(), language);
+        String message = findDenyMessage(request.getIdentityPublicId(), language);
         if (message == null) {
             log.info("[Security1] approve ALLOW identity={}", request.getIdentityPublicId());
             return true;
@@ -51,7 +58,7 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
         return false;
     }
 
-    private String findDenyMessage(String identityId) {
+    private String findDenyMessage(String identityId, String language) {
         if (identityId == null || watchList == null || ctx == null) {
             log.warn("[Security1] skip — missing identity/watchList/ctx identity={}", identityId);
             return null;
@@ -59,8 +66,9 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
         try {
             String cachedDeny = watchList.getDeniedMessage(identityId);
             if (cachedDeny != null) {
-                log.warn("[Security1] cached deny identity={} msg={}", identityId, cachedDeny);
-                return cachedDeny;
+                String localized = CoinHubAtmErrors.localize(ctx, cachedDeny, language);
+                log.warn("[Security1] cached deny identity={} msg={}", identityId, localized);
+                return localized;
             }
 
             IIdentity identity = ctx.findIdentityByIdentityId(identityId);
@@ -70,7 +78,7 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
             }
             if (identity.getState() == IIdentity.STATE_PROHIBITED) {
                 log.warn("[Security1] identity {} is PROHIBITED — denying", identityId);
-                return CoinHubAtmErrors.S1_DENIED;
+                return CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S1_DENIED, language);
             }
             IIdentityPiece personalInfo = null;
             for (IIdentityPiece piece : identity.getIdentityPieces()) {
@@ -94,16 +102,43 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
             for (WatchListMatch match : result.getMatches()) {
                 if (match != null && match.getScore() >= 100) {
                     if (match.getDetails() != null && !match.getDetails().trim().isEmpty()) {
-                        return match.getDetails();
+                        return CoinHubAtmErrors.localize(ctx, match.getDetails(), language);
                     }
-                    return CoinHubAtmErrors.S1_DENIED;
+                    return CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S1_DENIED, language);
                 }
             }
             log.info("[Security1] matches below threshold identity={}", identityId);
             return null;
         } catch (Exception e) {
             log.error("[Security1] check failed identity={} — denying", identityId, e);
-            return CoinHubAtmErrors.S1_CHECK_FAILED;
+            return CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S1_CHECK_FAILED, language);
         }
+    }
+
+    private String rememberLanguage(String identityId, String terminalSerial, String language) {
+        String normalized = CoinHubAtmErrors.normalizeLanguage(language);
+        if (identityId != null && !identityId.trim().isEmpty()) {
+            languageByKey.put(identityId, normalized);
+        }
+        if (terminalSerial != null && !terminalSerial.trim().isEmpty()) {
+            languageByKey.put(terminalSerial, normalized);
+        }
+        return normalized;
+    }
+
+    private String languageFor(String identityId, String terminalSerial) {
+        if (identityId != null) {
+            String lang = languageByKey.get(identityId);
+            if (lang != null) {
+                return lang;
+            }
+        }
+        if (terminalSerial != null) {
+            String lang = languageByKey.get(terminalSerial);
+            if (lang != null) {
+                return lang;
+            }
+        }
+        return "en";
     }
 }
