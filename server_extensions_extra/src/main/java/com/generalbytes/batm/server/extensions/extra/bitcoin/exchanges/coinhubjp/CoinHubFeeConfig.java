@@ -15,6 +15,7 @@ public class CoinHubFeeConfig {
     public static final BigDecimal DEFAULT_FX_SPREAD_PERCENT = new BigDecimal("0.80");
     public static final BigDecimal DEFAULT_CAS_BUFFER_PERCENT = new BigDecimal("0.07");
     public static final String DEFAULT_BTC_WITHDRAWAL_SOURCE = "hotwallet";
+    public static final String DEFAULT_LIQUIDITY_PROVIDER = "mexc";
     public static final boolean DEFAULT_USE_LIVE_FEES_API = true;
 
     private final IExtensionContext ctx;
@@ -46,6 +47,23 @@ public class CoinHubFeeConfig {
     public String getBtcWithdrawalSource() {
         String value = readString("btc_withdrawal_source", DEFAULT_BTC_WITHDRAWAL_SOURCE);
         return value == null ? DEFAULT_BTC_WITHDRAWAL_SOURCE : value.trim().toLowerCase();
+    }
+
+    public String getLiquidityProvider() {
+        String value = readString("liquidity_provider", DEFAULT_LIQUIDITY_PROVIDER);
+        if (value == null) {
+            return DEFAULT_LIQUIDITY_PROVIDER;
+        }
+        String normalized = value.trim().toLowerCase();
+        if ("okj".equals(normalized) || "mexc".equals(normalized)) {
+            return normalized;
+        }
+        log.warn("[CoinHubFeeConfig] Invalid liquidity_provider={} — using default {}", value, DEFAULT_LIQUIDITY_PROVIDER);
+        return DEFAULT_LIQUIDITY_PROVIDER;
+    }
+
+    public String getLiquidityTypeLabel() {
+        return "okj".equals(getLiquidityProvider()) ? "OKJ" : "MEXC";
     }
 
     public boolean useLiveFeesApi() {

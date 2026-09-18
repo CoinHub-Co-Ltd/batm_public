@@ -49,14 +49,16 @@ public interface ICoinHubAPI {
     RateResponse getBuyRate(
         @HeaderParam("X-API-SECRET") String apiKey,
         @PathParam("cryptoCurrency") String cryptoCurrency,
-        @PathParam("fiatCurrency") String fiatCurrency);
+        @PathParam("fiatCurrency") String fiatCurrency,
+        @QueryParam("liquidity_provider") String liquidityProvider);
 
     @GET
     @Path("market/rate/sell/{cryptoCurrency}/{fiatCurrency}/")
     RateResponse getSellRate(
         @HeaderParam("X-API-SECRET") String apiKey,
         @PathParam("cryptoCurrency") String cryptoCurrency,
-        @PathParam("fiatCurrency") String fiatCurrency);
+        @PathParam("fiatCurrency") String fiatCurrency,
+        @QueryParam("liquidity_provider") String liquidityProvider);
 
     @GET
     @Path("paperwallet/wallet/{address}/{cryptoCurrency}/balance")

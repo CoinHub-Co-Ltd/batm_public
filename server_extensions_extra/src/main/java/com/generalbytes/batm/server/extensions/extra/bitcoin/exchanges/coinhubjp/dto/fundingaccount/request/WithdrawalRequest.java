@@ -8,6 +8,7 @@ public class WithdrawalRequest {
     public String destination;
     public String order_id;
     public String source;
+    public String liquidity_provider;
     public String recipient;
     @Deprecated
     public String recepient;

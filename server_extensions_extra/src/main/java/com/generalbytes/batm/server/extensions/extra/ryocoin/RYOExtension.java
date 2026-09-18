@@ -29,6 +29,7 @@ import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.respons
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.TransactionFeesResponse;
 import com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.CoinHubJPExchange;
 import com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.CoinHubJPFeeTransactionListener;
+import com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.CoinHubFeeConfig;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubSecurity1Listener;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubWatchList;
 import com.generalbytes.batm.server.extensions.IExtensionContext;
@@ -189,10 +190,11 @@ public class RYOExtension extends AbstractExtension implements ITerminalListener
 
                 if ("coinhubratesource".equalsIgnoreCase(exchangeType)) {
                     String preferedFiatCurrency = FiatCurrency.JPY.getCode();
-                    return new CoinHubRateSource(preferedFiatCurrency, apiKey, chEndpoint);
-                } else if ("coinhubratesource-dev".equalsIgnoreCase(exchangeType)) {
-                    String preferedFiatCurrency = FiatCurrency.JPY.getCode();
-                    return new CoinHubRateSource(preferedFiatCurrency, apiKeyDev, chEndpointDev);
+                    String liquidityProvider = CoinHubFeeConfig.DEFAULT_LIQUIDITY_PROVIDER;
+                    if (ctx != null) {
+                        liquidityProvider = new CoinHubFeeConfig(ctx).getLiquidityProvider();
+                    }
+                    return new CoinHubRateSource(preferedFiatCurrency, apiKey, chEndpoint, liquidityProvider);
                 }
             } catch (Exception e) {
                 ExtensionsUtil.logExtensionParamsException("createRateSource", getClass().getSimpleName(), sourceLogin, e);

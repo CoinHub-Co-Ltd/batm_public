@@ -100,6 +100,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
     private String apiKey;
     private String secretKey;
     private String btcWithdrawalSource = CoinHubFeeConfig.DEFAULT_BTC_WITHDRAWAL_SOURCE;
+    private String liquidityProvider = CoinHubFeeConfig.DEFAULT_LIQUIDITY_PROVIDER;
 
     private ITransactionDetails currentTransaction;
 
@@ -137,7 +138,9 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
     public void setExtensionContext(IExtensionContext extensionContext) {
         this.extensionContext = extensionContext;
         if (extensionContext != null) {
-            this.btcWithdrawalSource = new CoinHubFeeConfig(extensionContext).getBtcWithdrawalSource();
+            CoinHubFeeConfig feeConfig = new CoinHubFeeConfig(extensionContext);
+            this.btcWithdrawalSource = feeConfig.getBtcWithdrawalSource();
+            this.liquidityProvider = feeConfig.getLiquidityProvider();
         }
     }
 
@@ -149,6 +152,20 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
 
     public String getBtcWithdrawalSource() {
         return btcWithdrawalSource;
+    }
+
+    public void setLiquidityProvider(String liquidityProvider) {
+        if (liquidityProvider == null || liquidityProvider.trim().isEmpty()) {
+            return;
+        }
+        String normalized = liquidityProvider.trim().toLowerCase();
+        if ("okj".equals(normalized) || "mexc".equals(normalized)) {
+            this.liquidityProvider = normalized;
+        }
+    }
+
+    public String getLiquidityProvider() {
+        return liquidityProvider;
     }
 
     // private BigDecimal getAmount(ITransactionDetails td) {
@@ -237,7 +254,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
 
         return call("deposit address", () -> {
             com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubjp.dto.fundingaccount.response.DepositAddress response =
-                api.getDepositAddress(apiKey, cryptoCurrency);
+                api.getDepositAddress(apiKey, cryptoCurrency, liquidityProvider);
 
             if (response == null) {
                 log.warn("deposit address response is null (check auth, endpoint, and HTTP status/body logs)");
@@ -382,7 +399,8 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
             if (remoteTransactionId != null && !remoteTransactionId.isEmpty()) {
                 request.order_id = remoteTransactionId;
             }
-            request.source = btcWithdrawalSource;
+            request.source = "hotwallet";
+            request.liquidity_provider = liquidityProvider;
             Withdrawal response = api.withdraw(apiKey, request);
             
             if (response == null) {
@@ -717,6 +735,7 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
                 request.instrument_id = instrument_id;
                 request.order_type = order_type;
                 request.fiat_amount = fiatAmount;
+                request.liquidity_provider = CoinHubJPExchange.this.liquidityProvider;
                 if (casOrderId != null && !casOrderId.trim().isEmpty()) {
                     request.order_id = casOrderId.trim();
                 }
