@@ -20,6 +20,8 @@ public class TransactionDetailsRequest {
     public String terminal_serial_number;
     public String identity_public_id;
     public String cellphone_used;
+    public String email;
+    public String receipt_language;
     public String event_type;    
     public String fee_discount;
     public String crypto_discount_amount;

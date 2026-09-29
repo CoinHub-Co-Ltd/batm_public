@@ -238,6 +238,10 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         return null;
     }
 
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     /**
      * Get human-readable transaction type name
      */
@@ -260,6 +264,29 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             receiptDetails.getRemoteTransactionId(),
             receiptDetails.getCellphone() != null ? receiptDetails.getCellphone() : receiptDetails.getEmail(),
             receiptDetails.getCellphone() != null ? "SMS" : "EMAIL");
+
+        if (!hasText(receiptDetails.getEmail()) || !hasText(receiptDetails.getRemoteTransactionId())) {
+            return;
+        }
+
+        try {
+            if (apiClient == null) {
+                log.warn("[SEIKI] API client not initialized, skipping buy acknowledgement email");
+                return;
+            }
+
+            TransactionDetailsRequest request = new TransactionDetailsRequest();
+            request.order_id = receiptDetails.getRemoteTransactionId();
+            request.email = receiptDetails.getEmail().trim();
+            request.event_type = "RECEIPT";
+            if (hasText(receiptDetails.getUserLanguage())) {
+                request.receipt_language = receiptDetails.getUserLanguage().trim();
+            }
+
+            apiClient.saveTransactionDetails(apiKey, request);
+        } catch (Exception e) {
+            log.error("[SEIKI] Error sending customer email for buy acknowledgement", e);
+        }
     }
     
     /**
@@ -323,6 +350,14 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             String netCryptoAmount = customData.get("net.crypto.amount");
             if (netCryptoAmount != null) {
                 request.net_crypto_amount = netCryptoAmount;
+            }
+            String receiptEmail = customData.get(IReceiptDetails.CUSTOM_DATA_RECEIPT_EMAIL);
+            if (hasText(receiptEmail)) {
+                request.email = receiptEmail.trim();
+            }
+            String receiptLanguage = customData.get(IReceiptDetails.CUSTOM_DATA_RECEIPT_LANGUAGE);
+            if (hasText(receiptLanguage)) {
+                request.receipt_language = receiptLanguage.trim();
             }
         }
         
