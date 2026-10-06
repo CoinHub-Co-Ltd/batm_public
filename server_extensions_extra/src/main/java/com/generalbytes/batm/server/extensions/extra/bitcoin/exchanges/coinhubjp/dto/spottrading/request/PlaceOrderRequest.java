@@ -13,4 +13,5 @@ public class PlaceOrderRequest {
     public String order_type;
     public String size;
     public BigDecimal fiat_amount;
+    public String liquidity_provider;
 }

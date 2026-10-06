@@ -452,7 +452,7 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         if (marketRate == null || marketRate.compareTo(BigDecimal.ZERO) <= 0) {
             try {
                 if (apiClient != null && coin != null && fiat != null) {
-                    RateResponse rr = apiClient.getBuyRate(apiKey, coin, fiat);
+                    RateResponse rr = apiClient.getBuyRate(apiKey, coin, fiat, feeConfig.getLiquidityProvider());
                     if (rr != null && rr.best_ask != null && rr.best_ask.compareTo(BigDecimal.ZERO) > 0) {
                         marketRate = rr.best_ask;
                     }
@@ -648,7 +648,7 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             return;
         }
 
-        request.liquidity_type = "mexc".equalsIgnoreCase(btcWithdrawalSource()) ? "MEXC" : "Hotwallet";
+        request.liquidity_type = feeConfig.getLiquidityTypeLabel();
         request.jpy_to_usd_rate = feeConfig.getJpyUsdRate().toPlainString();
 
         BigDecimal cash = td.getCashAmount();
