@@ -74,6 +74,8 @@ import com.generalbytes.batm.server.extensions.extra.bitcoin.wallets.cryptx.v2.C
 import com.generalbytes.batm.server.extensions.extra.bitcoin.wallets.cryptx.v2.CryptXWithUniqueAddresses;
 import com.generalbytes.batm.server.extensions.util.DummyWalletAndExchangeAndSourceFactory;
 import com.generalbytes.batm.server.extensions.watchlist.IWatchList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.net.InetSocketAddress;
@@ -90,6 +92,7 @@ import static com.generalbytes.batm.server.extensions.extra.bitcoin.wallets.cryp
 import static com.generalbytes.batm.server.extensions.extra.bitcoin.wallets.cryptx.v2.ICryptXAPI.PRIORITY_MEDIUM;
 
 public class BitcoinExtension extends AbstractExtension {
+    private static final Logger log = LoggerFactory.getLogger(BitcoinExtension.class);
     private IExtensionContext ctx;
     private static final DummyWalletAndExchangeAndSourceFactory dummyFactory = new DummyWalletAndExchangeAndSourceFactory();
 
@@ -507,14 +510,30 @@ public class BitcoinExtension extends AbstractExtension {
         if (CryptoCurrency.BNB.getCode().equalsIgnoreCase(cryptoCurrency)) {
             return new BinanceCoinAddressValidator();
         }
+        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency)) {
+            log.info("Creating BTC testnet4 address validator for cryptoCurrency={}", cryptoCurrency);
+            return new BitcoinTestnet4AddressValidator();
+        }
         return null; // no BTC address validator in open source version so far (It is present in
                      // built-in extension)
     }
 
     @Override
     public IPaperWalletGenerator createPaperWalletGenerator(String cryptoCurrency) {
-        return null; // no BTC paper wallet generator in open source version so far (It is present in
-                     // built-in extension)
+        log.info("Creating paper wallet generator for cryptoCurrency={}", cryptoCurrency);
+        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency)) {
+            BitcoinTestnet4PaperWalletGenerator generator = new BitcoinTestnet4PaperWalletGenerator();
+            log.info("Using BTC testnet4 paper wallet generator: {}", generator);
+            return generator;
+        }
+        return null;
+    }
+
+    private boolean isBtcTestnet4PaperWalletEnabled() {
+        if (ctx == null || !ctx.configFileExists("coinhub")) {
+            return false;
+        }
+        return "true".equalsIgnoreCase(ctx.getConfigProperty("coinhub", "paper_wallet_testnet4", "false").trim());
     }
 
     @Override
