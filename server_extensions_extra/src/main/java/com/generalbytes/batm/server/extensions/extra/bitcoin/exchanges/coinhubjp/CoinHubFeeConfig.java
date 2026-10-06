@@ -48,6 +48,23 @@ public class CoinHubFeeConfig {
         return value == null ? DEFAULT_BTC_WITHDRAWAL_SOURCE : value.trim().toLowerCase();
     }
 
+    public String getLiquidityProvider() {
+        String value = readString("liquidity_provider", DEFAULT_LIQUIDITY_PROVIDER);
+        if (value == null) {
+            return DEFAULT_LIQUIDITY_PROVIDER;
+        }
+        String normalized = value.trim().toLowerCase();
+        if ("okj".equals(normalized) || "mexc".equals(normalized)) {
+            return normalized;
+        }
+        log.warn("[CoinHubFeeConfig] Invalid liquidity_provider={} — using default {}", value, DEFAULT_LIQUIDITY_PROVIDER);
+        return DEFAULT_LIQUIDITY_PROVIDER;
+    }
+
+    public String getLiquidityTypeLabel() {
+        return "okj".equals(getLiquidityProvider()) ? "OKJ" : "MEXC";
+    }
+
     public boolean useLiveFeesApi() {
         if (ctx == null || !ctx.configFileExists("coinhub")) {
             return DEFAULT_USE_LIVE_FEES_API;

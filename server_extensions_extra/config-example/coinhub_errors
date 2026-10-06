@@ -1,0 +1,38 @@
+# CoinHub ATM deny messages — copy to /batm/config/coinhub_errors
+# Keys: <code>.<lang>  (en | ja)
+# Placeholders use MessageFormat: {0}, {1}, ...
+
+# Security 1
+00001.en=Transaction denied.
+00001.ja=取引が拒否されました。
+
+00002.en=Black Listed. Please contact support.
+00002.ja=ブラックリストに登録されています。サポートにお問い合わせください。
+
+00003.en=CoinHub watchlist unavailable (empty response)
+00003.ja=ウォッチリストを確認できませんでした。後でもう一度お試しください。
+
+00004.en=Transaction denied.
+00004.ja=取引が拒否されました。
+
+# Security 2
+00005.en=Crypto currency or destination address is missing.
+00005.ja=暗号通貨または送金先アドレスがありません。
+
+00006.en=Transaction denied.
+00006.ja=取引が拒否されました。
+
+00007.en=Transaction limit check unavailable. Please try again later.
+00007.ja=取引限度額の確認ができませんでした。後でもう一度お試しください。
+
+00008.en=Transaction limit check unavailable. Please try again later.
+00008.ja=取引限度額の確認ができませんでした。後でもう一度お試しください。
+
+00009.en=Transaction limit exceeded. Please try again later.
+00009.ja=取引限度額を超えました。後でもう一度お試しください。
+
+00010.en=Transaction limit exceeded.
+00010.ja=取引限度額を超えました。
+
+00016.en=Maximum {0} JPY per transaction exceeded.
+00016.ja=1回の取引上限 {0} 円を超えました。

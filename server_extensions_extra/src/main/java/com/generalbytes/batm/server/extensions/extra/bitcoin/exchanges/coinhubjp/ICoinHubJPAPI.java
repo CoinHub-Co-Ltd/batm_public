@@ -57,7 +57,7 @@ public interface ICoinHubJPAPI {
 
     @GET
     @Path("/service/exchange/wallet/balance")
-    Balance getBalance() throws IOException;
+    Balance getBalance(@QueryParam("liquidity_provider") String liquidityProvider) throws IOException;
 
     // @GET
     // @Path("/account/v3/wallet/{currency}")
@@ -83,19 +83,23 @@ public interface ICoinHubJPAPI {
     @Path("/service/exchange/trading/{spotOrFund}/{instrumentId}/order-book")
     OrderBookResponse getOrderBook(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("instrument_id") String instrument_id,
                         @QueryParam("size") int size,
-                        @QueryParam("depth") double depth) throws IOException;
+                        @QueryParam("depth") double depth,
+                        @QueryParam("liquidity_provider") String liquidityProvider) throws IOException;
     @GET
     @Path("/service/exchange/wallet/deposit-address/{cryptoCurrency}")
     @Produces("application/json")
-    DepositAddress getDepositAddress(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("cryptoCurrency") String cryptoCurrency) throws IOException;
+    DepositAddress getDepositAddress(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("cryptoCurrency") String cryptoCurrency,
+                        @QueryParam("liquidity_provider") String liquidityProvider) throws IOException;
 
      @GET
     @Path("/market/rate/buy/{cryptoCurrency}/{fiatCurrency}")
-    RateResponse getBuyRate(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("crypto_currency") String cryptoCurrency, @PathParam("fiat_currency") String fiatCurrency);
+    RateResponse getBuyRate(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("crypto_currency") String cryptoCurrency, @PathParam("fiat_currency") String fiatCurrency,
+                        @QueryParam("liquidity_provider") String liquidityProvider);
 
     @GET
     @Path("/market/rate/sell/{cryptoCurrency}/{fiatCurrency}")
-    RateResponse getSellRate(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("crypto_currency") String cryptoCurrency, @PathParam("fiat_currency") String fiatCurrency);
+    RateResponse getSellRate(@HeaderParam("X-API-SECRET") String apiKey, @PathParam("crypto_currency") String cryptoCurrency, @PathParam("fiat_currency") String fiatCurrency,
+                        @QueryParam("liquidity_provider") String liquidityProvider);
     
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
