@@ -102,6 +102,18 @@ public class BitcoinExtension extends AbstractExtension {
         this.ctx = ctx;
     }
 
+    /**
+     * When {@code paper_wallet_testnet4=true} in {@code coinhub} config, BTC uses testnet4
+     * address validation and paper-wallet generation (mainnet addresses will fail).
+     */
+    private boolean isBtcTestnet4PaperWalletEnabled() {
+        if (ctx == null || !ctx.configFileExists("coinhub")) {
+            return false;
+        }
+        String value = ctx.getConfigProperty("coinhub", "paper_wallet_testnet4", "false");
+        return value != null && "true".equalsIgnoreCase(value.trim());
+    }
+
     @Override
     public String getName() {
         return "BATM Bitcoin extra extension";
@@ -510,30 +522,20 @@ public class BitcoinExtension extends AbstractExtension {
         if (CryptoCurrency.BNB.getCode().equalsIgnoreCase(cryptoCurrency)) {
             return new BinanceCoinAddressValidator();
         }
-        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency)) {
+        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency) && isBtcTestnet4PaperWalletEnabled()) {
             log.info("Creating BTC testnet4 address validator for cryptoCurrency={}", cryptoCurrency);
             return new BitcoinTestnet4AddressValidator();
         }
-        return null; // no BTC address validator in open source version so far (It is present in
-                     // built-in extension)
+        return null; // BTC mainnet validator lives in the built-in extension
     }
 
     @Override
     public IPaperWalletGenerator createPaperWalletGenerator(String cryptoCurrency) {
-        log.info("Creating paper wallet generator for cryptoCurrency={}", cryptoCurrency);
-        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency)) {
-            BitcoinTestnet4PaperWalletGenerator generator = new BitcoinTestnet4PaperWalletGenerator();
-            log.info("Using BTC testnet4 paper wallet generator: {}", generator);
-            return generator;
+        if (CryptoCurrency.BTC.getCode().equalsIgnoreCase(cryptoCurrency) && isBtcTestnet4PaperWalletEnabled()) {
+            log.info("Using BTC testnet4 paper wallet generator for cryptoCurrency={}", cryptoCurrency);
+            return new BitcoinTestnet4PaperWalletGenerator(ctx);
         }
-        return null;
-    }
-
-    private boolean isBtcTestnet4PaperWalletEnabled() {
-        if (ctx == null || !ctx.configFileExists("coinhub")) {
-            return false;
-        }
-        return "true".equalsIgnoreCase(ctx.getConfigProperty("coinhub", "paper_wallet_testnet4", "false").trim());
+        return null; // BTC mainnet paper wallet lives in the built-in extension
     }
 
     @Override
