@@ -14,7 +14,7 @@ public class CoinHubFeeConfig {
     public static final BigDecimal DEFAULT_COINHUB_FEE_PERCENT = new BigDecimal("10");
     public static final BigDecimal DEFAULT_FX_SPREAD_PERCENT = new BigDecimal("0.80");
     public static final BigDecimal DEFAULT_CAS_BUFFER_PERCENT = new BigDecimal("0.07");
-    public static final String DEFAULT_BTC_WITHDRAWAL_SOURCE = "hotwallet";
+    public static final String DEFAULT_BTC_WITHDRAWAL_SOURCE = "exchange-hotwallet";
     public static final boolean DEFAULT_USE_LIVE_FEES_API = true;
 
     private final IExtensionContext ctx;
