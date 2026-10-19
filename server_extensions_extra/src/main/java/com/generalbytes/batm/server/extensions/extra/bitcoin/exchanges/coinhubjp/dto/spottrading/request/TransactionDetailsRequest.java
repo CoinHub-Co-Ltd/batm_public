@@ -21,6 +21,7 @@ public class TransactionDetailsRequest {
     public String identity_public_id;
     public String cellphone_used;
     public String email;
+    public String customer_email;
     public String receipt_language;
     public String event_type;    
     public String fee_discount;
@@ -41,6 +42,11 @@ public class TransactionDetailsRequest {
     public String terminal_time;
     public String market_rate;
     public String markup_rate;
+    public String markup_profit_rate;
+    public String markup_profit_percentage;
+    public String markup_fee_percentage;
+    public String markup_fee_rate;
+    public String markup_complete_rate;
     public String fiat_money;
     public String fiat_currency;
     public String crypto_code;

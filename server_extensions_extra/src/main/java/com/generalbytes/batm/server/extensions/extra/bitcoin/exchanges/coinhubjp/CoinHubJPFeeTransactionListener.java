@@ -213,12 +213,12 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
                 // } else {
                 //     log.warn("[SEIKI][DEBUG] remoteTransactionId is null, skipping custom data update.");
                 // }
+                sendTransactionToApi(transactionDetails, "UPDATED");
                 return customData;
             } else {
                 log.info("[SEIKI] Fee already applied or not a crypto transaction. Skipping update for transaction: {}", transactionDetails.getRemoteTransactionId());
             }
-            
-            // Send transaction details to API
+
             sendTransactionToApi(transactionDetails, "UPDATED");
             
             // Optionally, update a timestamp or other info
@@ -240,6 +240,37 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private String customerEmail(ITransactionDetails transactionDetails) {
+        if (transactionDetails == null) {
+            return null;
+        }
+        Map<String, String> customData = transactionDetails.getCustomData();
+        if (customData != null) {
+            String receiptEmail = customData.get(IReceiptDetails.CUSTOM_DATA_RECEIPT_EMAIL);
+            if (hasText(receiptEmail)) {
+                return receiptEmail.trim();
+            }
+        }
+        return customerEmailFromIdentity(transactionDetails.getIdentityPublicId());
+    }
+
+    private String customerEmailFromIdentity(String identityPublicId) {
+        if (!hasText(identityPublicId) || ctx == null) {
+            return null;
+        }
+        IIdentity identity = ctx.findIdentityByIdentityId(identityPublicId);
+        if (identity == null || identity.getIdentityPieces() == null) {
+            return null;
+        }
+        String email = null;
+        for (IIdentityPiece piece : identity.getIdentityPieces()) {
+            if (piece.getPieceType() == IIdentityPiece.TYPE_EMAIL && hasText(piece.getEmailAddress())) {
+                email = piece.getEmailAddress().trim();
+            }
+        }
+        return email;
     }
 
     /**
@@ -265,7 +296,20 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             receiptDetails.getCellphone() != null ? receiptDetails.getCellphone() : receiptDetails.getEmail(),
             receiptDetails.getCellphone() != null ? "SMS" : "EMAIL");
 
-        if (!hasText(receiptDetails.getEmail()) || !hasText(receiptDetails.getRemoteTransactionId())) {
+        if (!hasText(receiptDetails.getRemoteTransactionId())) {
+            return;
+        }
+
+        String email = hasText(receiptDetails.getEmail()) ? receiptDetails.getEmail().trim() : null;
+        if (!hasText(email) && ctx != null) {
+            ITransactionDetails td = ctx.findTransactionByTransactionId(receiptDetails.getRemoteTransactionId());
+            if (td != null) {
+                email = customerEmail(td);
+            }
+        }
+        if (!hasText(email)) {
+            log.warn("[SEIKI] No customer email for {}, skipping buy acknowledgement email",
+                receiptDetails.getRemoteTransactionId());
             return;
         }
 
@@ -277,12 +321,14 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
 
             TransactionDetailsRequest request = new TransactionDetailsRequest();
             request.order_id = receiptDetails.getRemoteTransactionId();
-            request.email = receiptDetails.getEmail().trim();
+            request.email = email;
+            request.customer_email = email;
             request.event_type = "RECEIPT";
             if (hasText(receiptDetails.getUserLanguage())) {
                 request.receipt_language = receiptDetails.getUserLanguage().trim();
             }
 
+            log.info("[SEIKI] Sending buy acknowledgement email for order {} to {}", request.order_id, email);
             apiClient.saveTransactionDetails(apiKey, request);
         } catch (Exception e) {
             log.error("[SEIKI] Error sending customer email for buy acknowledgement", e);
@@ -351,16 +397,19 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             if (netCryptoAmount != null) {
                 request.net_crypto_amount = netCryptoAmount;
             }
-            String receiptEmail = customData.get(IReceiptDetails.CUSTOM_DATA_RECEIPT_EMAIL);
-            if (hasText(receiptEmail)) {
-                request.email = receiptEmail.trim();
-            }
             String receiptLanguage = customData.get(IReceiptDetails.CUSTOM_DATA_RECEIPT_LANGUAGE);
             if (hasText(receiptLanguage)) {
                 request.receipt_language = receiptLanguage.trim();
             }
         }
-        
+        request.email = customerEmail(transactionDetails);
+        if (hasText(request.email)) {
+            request.customer_email = request.email;
+            log.info("[SEIKI] Customer email for order {} is {}", request.order_id, request.email);
+        } else {
+            log.warn("[SEIKI] No customer email for order {}", request.order_id);
+        }
+
         // Set transaction metadata
         request.transaction_type = getTransactionTypeName(transactionDetails.getType());
         request.transaction_status = String.valueOf(transactionDetails.getStatus());
@@ -405,6 +454,7 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         populateConfiguredProfitPercents(request, transactionDetails);
         populateCoinHubMarkupPayload(request, transactionDetails);
         populateWithdrawalFinancialFields(request, transactionDetails);
+        alignPortalFieldNames(request, transactionDetails);
 
         log.info("[SEIKI] Built transaction request: orderId={}, instrumentId={}, cashAmount={}, cryptoAmount={}, fixedFee={}, feeDiscount={}, expectedProfit={}, rateSource={}, effectiveRate={}, liquidityType={}, tradingJpy={}, eventType={}",
             request.order_id, request.instrument_id, request.cash_amount, request.crypto_amount, request.fixed_fee, request.fee_discount, request.expected_profit, request.rate_source_price, request.customer_effective_rate, request.liquidity_type, request.trading_amount_jpy, eventType);
@@ -450,10 +500,6 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         }
     }
 
-    /**
-     * Populates CoinHub-specific markup fields for {@code /buy/transaction-details}:
-     * {@code market_rate}, {@code markup_rate}, fiat/crypto aliases, {@code type}, fee breakdown and {@code markup_total_percentage}.
-     */
     private void populateCoinHubMarkupPayload(TransactionDetailsRequest request, ITransactionDetails td) {
         boolean isBuy = td.getType() == ITransactionDetails.TYPE_BUY_CRYPTO;
         boolean isSell = td.getType() == ITransactionDetails.TYPE_SELL_CRYPTO;
@@ -526,24 +572,37 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         return tradingJpy.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : tradingJpy;
     }
 
-    /**
-     * ATM Rate column: {@code trading_jpy ÷ btc} (e.g. 18,073,150 JPY/BTC), not {@code cash ÷ btc}.
-     */
     private void applyObservedAtmRate(
         TransactionDetailsRequest request,
+        BigDecimal cash,
         BigDecimal tradingJpy,
+        BigDecimal tradeFee,
         BigDecimal crypto,
         BigDecimal marketRate
     ) {
-        if (tradingJpy == null || crypto == null || crypto.compareTo(BigDecimal.ZERO) <= 0) {
+        if (marketRate != null && marketRate.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal coinhubFraction = feeConfig.getCoinhubFeePercent()
+                .divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP);
+            request.markup_rate = marketRate
+                .multiply(BigDecimal.ONE.add(coinhubFraction))
+                .setScale(0, RoundingMode.HALF_UP)
+                .toPlainString();
+        }
+
+        if (cash == null || crypto == null || crypto.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
 
-        BigDecimal atmRate = tradingJpy.divide(crypto, 0, RoundingMode.HALF_UP);
-        request.markup_rate = atmRate.toPlainString();
+        BigDecimal fee = tradeFee != null ? tradeFee : BigDecimal.ZERO;
+        BigDecimal completeBase = cash;
+        if (tradingJpy != null && fee.compareTo(BigDecimal.ZERO) > 0) {
+            completeBase = cash.add(tradingJpy.multiply(fee));
+        }
+        BigDecimal completeRate = completeBase.divide(crypto, 0, RoundingMode.HALF_UP);
+        request.markup_complete_rate = completeRate.toPlainString();
 
         if (marketRate != null && marketRate.compareTo(BigDecimal.ZERO) > 0) {
-            BigDecimal markupPct = atmRate
+            BigDecimal markupPct = completeRate
                 .divide(marketRate, 16, RoundingMode.HALF_UP)
                 .subtract(BigDecimal.ONE)
                 .multiply(new BigDecimal("100"));
@@ -558,10 +617,6 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         return !"mexc".equalsIgnoreCase(btcWithdrawalSource());
     }
 
-    /**
-     * Hot wallet: persist the rate the customer actually received on the ATM ({@code cash ÷ crypto}),
-     * not a theoretical {@code marketRate × casMarkup} from simulation math.
-     */
     private void populateHotWalletMarkupPayload(
         TransactionDetailsRequest request,
         ITransactionDetails td,
@@ -596,10 +651,10 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         BigDecimal totalPct = casMarkup.subtract(BigDecimal.ONE).multiply(new BigDecimal("100"));
         request.markup_total_percentage = totalPct.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
 
-        applyObservedAtmRate(request, resolveTradingJpy(td), crypto, marketRate);
+        applyObservedAtmRate(request, cash, resolveTradingJpy(td), BigDecimal.ZERO, crypto, marketRate);
 
-        log.info("[SEIKI] Hot wallet observed rate: market={}, atmRate={}, configuredTotalPct={}%",
-            marketRate, request.markup_rate, request.markup_total_percentage);
+        log.info("[SEIKI] Hot wallet rates: market={}, markup={}, complete={}, configuredTotalPct={}%",
+            marketRate, request.markup_rate, request.markup_complete_rate, request.markup_total_percentage);
     }
 
     /** MEXC buy markup — includes live taker fee from {@code /service/transaction/fees}. */
@@ -612,8 +667,6 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
         BigDecimal crypto,
         BigDecimal marketRate
     ) {
-        applyObservedAtmRate(request, resolveTradingJpy(td), crypto, marketRate);
-
         BigDecimal coinhubPct = feeConfig.getCoinhubFeePercent();
         BigDecimal tradeFeeFraction = BigDecimal.ZERO;
         if (feeConfig.useLiveFeesApi()) {
@@ -650,6 +703,8 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             .multiply(BigDecimal.ONE.add(feeConfig.getCasBufferPercent().divide(new BigDecimal("100"), 20, RoundingMode.HALF_UP)));
         BigDecimal totalPct = compound.subtract(BigDecimal.ONE).multiply(new BigDecimal("100"));
         request.markup_total_percentage = totalPct.setScale(12, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+
+        applyObservedAtmRate(request, cash, resolveTradingJpy(td), tradeFeeFraction, crypto, marketRate);
     }
 
     private BigDecimal resolveCoinhubFeePercent(String coin, String fiat) {
@@ -711,23 +766,53 @@ public class CoinHubJPFeeTransactionListener implements ITransactionListener {
             request.btc_amount = td.getCryptoAmount().toPlainString();
         }
 
-        if (td.getExpectedProfit() != null) {
-            request.coinhub_fee_percentage = td.getExpectedProfit()
-                .setScale(4, RoundingMode.HALF_UP)
-                .stripTrailingZeros()
-                .toPlainString();
+        if (hasText(request.markup_coinhub_fee_percentage)) {
+            request.coinhub_fee_percentage = request.markup_coinhub_fee_percentage;
         }
 
-        BigDecimal crypto = td.getCryptoAmount();
-        BigDecimal rateSource = td.getRateSourcePrice();
-        if (tradingJpy != null && crypto != null && rateSource != null
-            && tradingJpy.compareTo(BigDecimal.ZERO) > 0 && crypto.compareTo(BigDecimal.ZERO) > 0) {
-            BigDecimal fiatAtMarket = crypto.multiply(rateSource);
-            BigDecimal markupProfitJpy = tradingJpy.subtract(fiatAtMarket);
-            if (markupProfitJpy.compareTo(BigDecimal.ZERO) < 0) {
-                markupProfitJpy = BigDecimal.ZERO;
+        if (tradingJpy != null && hasText(request.coinhub_fee_percentage)) {
+            try {
+                BigDecimal feePercent = new BigDecimal(request.coinhub_fee_percentage);
+                BigDecimal fraction = feePercent.compareTo(BigDecimal.ONE) > 0
+                    ? feePercent.divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP)
+                    : feePercent;
+                request.coinhub_fee_amount = tradingJpy.multiply(fraction)
+                    .setScale(2, RoundingMode.HALF_UP)
+                    .toPlainString();
+            } catch (NumberFormatException e) {
+                log.debug("[SEIKI] Could not derive coinhub_fee_amount from {}", request.coinhub_fee_percentage);
             }
-            request.coinhub_fee_amount = markupProfitJpy.setScale(2, RoundingMode.HALF_UP).toPlainString();
+        }
+    }
+
+    /**
+     * Names read directly by the portal transaction-details mapper and Slack log.
+     */
+    private void alignPortalFieldNames(TransactionDetailsRequest request, ITransactionDetails td) {
+        if (hasText(request.email)) {
+            request.customer_email = request.email.trim();
+        }
+        if (hasText(request.markup_rate)) {
+            request.markup_profit_rate = request.markup_rate;
+        }
+        if (hasText(request.markup_complete_rate)) {
+            request.markup_fee_rate = request.markup_complete_rate;
+        }
+        if (hasText(request.markup_coinhub_fee_percentage)) {
+            request.markup_fee_percentage = request.markup_coinhub_fee_percentage;
+        }
+
+        String profitPercent = null;
+        if (td.getType() == ITransactionDetails.TYPE_SELL_CRYPTO) {
+            profitPercent = request.configured_profit_sell_percent;
+        } else if (td.getType() == ITransactionDetails.TYPE_BUY_CRYPTO) {
+            profitPercent = request.configured_profit_buy_percent;
+        }
+        if (!hasText(profitPercent) && hasText(request.expected_profit)) {
+            profitPercent = request.expected_profit;
+        }
+        if (hasText(profitPercent)) {
+            request.markup_profit_percentage = profitPercent.trim();
         }
     }
 

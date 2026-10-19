@@ -2,6 +2,8 @@ package com.generalbytes.batm.server.extensions.extra.bitcoin.exchanges.coinhubj
 
 public class Withdrawal {
     public String message;
+    public boolean result;
+    public String withdrawOrderId;
     public Data data;
 
     public static class Data {
