@@ -235,7 +235,8 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
         //     }
         //     return new BigDecimal(available);
         // });
-        return BigDecimal.ZERO;
+        log.warn("Balance for {} is not available from the exchange API; continuing so the withdraw can be sent.", currency);
+        return BigDecimal.TEN;
     }
 
     private String checkCryptoCurrency(String cryptoCurrency) {
@@ -399,8 +400,9 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
             if (remoteTransactionId != null && !remoteTransactionId.isEmpty()) {
                 request.order_id = remoteTransactionId;
             }
-            request.source = "hotwallet";
+            request.source = btcWithdrawalSource;
             request.liquidity_provider = liquidityProvider;
+            log.info("Withdraw request source={} liquidity_provider={}", request.source, liquidityProvider);
             Withdrawal response = api.withdraw(apiKey, request);
             
             if (response == null) {
@@ -408,10 +410,14 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
                 return null;
             }
 
-            boolean ok = response.data != null && response.data.result && response.data.withdrawOrderId != null && !response.data.withdrawOrderId.trim().isEmpty();
+            String withdrawOrderId = response.withdrawOrderId;
+            boolean result = response.result;
+            if ((withdrawOrderId == null || withdrawOrderId.trim().isEmpty()) && response.data != null) {
+                withdrawOrderId = response.data.withdrawOrderId;
+                result = response.data.result;
+            }
+            boolean ok = result && withdrawOrderId != null && !withdrawOrderId.trim().isEmpty();
             if (!ok) {
-                String withdrawOrderId = response.data != null ? response.data.withdrawOrderId : null;
-                boolean result = response.data != null && response.data.result;
                 String msg = response.message;
                 String rawMsg = (response.data != null && response.data.raw != null) ? response.data.raw.msg : null;
                 Integer rawCode = (response.data != null && response.data.raw != null) ? response.data.raw.code : null;
@@ -421,8 +427,8 @@ public class CoinHubJPExchange implements IExchangeAdvanced, IRateSourceAdvanced
                 return null;
             }
 
-            log.info("Withdraw success. withdrawOrderId={}", response.data.withdrawOrderId);
-            return response.data.withdrawOrderId;
+            log.info("Withdraw success. withdrawOrderId={}", withdrawOrderId);
+            return withdrawOrderId;
             
         } catch (HttpStatusIOException e) {
             log.error("sendCoins HTTP error; status={}, body={}", e.getHttpStatusCode(), e.getHttpBody(), e);

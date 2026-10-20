@@ -15,6 +15,7 @@ public class CoinHubFeeConfig {
     public static final BigDecimal DEFAULT_FX_SPREAD_PERCENT = new BigDecimal("0.80");
     public static final BigDecimal DEFAULT_CAS_BUFFER_PERCENT = new BigDecimal("0.07");
     public static final String DEFAULT_BTC_WITHDRAWAL_SOURCE = "exchange-hotwallet";
+    public static final String DEFAULT_LIQUIDITY_PROVIDER = "okj";
     public static final boolean DEFAULT_USE_LIVE_FEES_API = true;
 
     private final IExtensionContext ctx;
@@ -45,7 +46,16 @@ public class CoinHubFeeConfig {
 
     public String getBtcWithdrawalSource() {
         String value = readString("btc_withdrawal_source", DEFAULT_BTC_WITHDRAWAL_SOURCE);
-        return value == null ? DEFAULT_BTC_WITHDRAWAL_SOURCE : value.trim().toLowerCase();
+        if (value == null || value.trim().isEmpty()) {
+            return DEFAULT_BTC_WITHDRAWAL_SOURCE;
+        }
+        String normalized = value.trim().toLowerCase();
+        if ("hotwallet".equals(normalized)) {
+            log.warn("[CoinHubFeeConfig] btc_withdrawal_source=hotwallet is rejected by Operation — using {}",
+                DEFAULT_BTC_WITHDRAWAL_SOURCE);
+            return DEFAULT_BTC_WITHDRAWAL_SOURCE;
+        }
+        return normalized;
     }
 
     public String getLiquidityProvider() {
