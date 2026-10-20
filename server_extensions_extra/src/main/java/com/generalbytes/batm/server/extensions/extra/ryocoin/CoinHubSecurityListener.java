@@ -146,37 +146,66 @@ public class CoinHubSecurityListener implements ITransactionListener {
 
     @Override
     public boolean isTransactionApproved(ITransactionRequest request) {
+        String rid = request.getRemoteTransactionId();
         if (request.getType() != ITransactionRequest.TYPE_BUY_CRYPTO) {
+            log.info("[Security] approve SKIP rid={} type={} (not buy)", rid, request.getType());
             return true;
         }
         String language = languageFor(request.getIdentityPublicId(), request.getTerminalSerialNumber());
         BigDecimal amount = request.getCashAmount();
+        log.info("[Security] approve START rid={} identity={} amount={} {} lang={}",
+            rid, request.getIdentityPublicId(), amount, request.getCashCurrency(), language);
         if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            log.info("[Security] approve ALLOW rid={} (no cash amount)", rid);
             return true;
         }
         if (!"JPY".equalsIgnoreCase(request.getCashCurrency())) {
+            log.info("[Security] approve ALLOW rid={} (cash currency not JPY)", rid);
             return true;
         }
         if (amount.compareTo(maxPerTx) > 0) {
+            log.warn("[Security] approve DENY rid={} reason=00016 amount={} maxPerTx={}", rid, amount, maxPerTx);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_MAX_PER_TX, language, maxPerTx.toPlainString()));
         }
         String identityId = request.getIdentityPublicId();
         if (identityId == null) {
+            log.info("[Security] approve ALLOW rid={} (no identity)", rid);
             return true;
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
+            log.warn("[Security] approve DENY rid={} identity={} reason=00008 ledger unavailable", rid, identityId);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LEDGER_UNAVAILABLE, language));
         }
+        log.info("[Security] approve ledger rid={} identity={} entries={}", rid, identityId, ledger.size());
         if (noBuyInLastYear(ledger)) {
+            log.info("[Security] approve ALLOW rid={} identity={} (no buy in last year)", rid, identityId);
             return true;
         }
+        BigDecimal past3h = sumInHours(ledger, 3);
         if (exceedThreeHours(ledger, amount)) {
+            log.warn("[Security] approve DENY rid={} identity={} reason=00009 past3h={} current={} max3Hours={}",
+                rid, identityId, past3h, amount, max3Hours);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
         }
-        if (exceedCalculation(ledger, amount) || exceedsAml(ledger, amount)) {
+        boolean calcFail = exceedCalculation(ledger, amount);
+        boolean amlFail = exceedsAml(ledger, amount);
+        if (calcFail || amlFail) {
+            BigDecimal d1 = sumInWindow(ledger, 1);
+            BigDecimal d7 = sumInWindow(ledger, 7);
+            BigDecimal d30 = sumInWindow(ledger, 30);
+            BigDecimal d90 = sumInWindow(ledger, 90);
+            BigDecimal d180 = sumInWindow(ledger, 180);
+            BigDecimal d365 = sumInWindow(ledger, 365);
+            log.warn("[Security] approve DENY rid={} identity={} reason=00010 calcFail={} amlFail={} "
+                    + "current={} d1={} d7={} d30={} d90={} d180={} d365={} "
+                    + "limits calcDay={} calcWeek={} calcLong={} amlDay={} aml90={} amlLong={}",
+                rid, identityId, calcFail, amlFail,
+                amount, d1, d7, d30, d90, d180, d365,
+                calcDay, calcWeek, calcLong, amlDay, aml90, amlLong);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
         }
+        log.info("[Security] approve ALLOW rid={} identity={} amount={}", rid, identityId, amount);
         return true;
     }
 
