@@ -37,12 +37,11 @@ public class CoinHubSecurityListener implements ITransactionListener {
 
     private final BigDecimal maxPerTx;
     private final BigDecimal max3Hours;
-    private final BigDecimal calcDay;
-    private final BigDecimal calcWeek;
-    private final BigDecimal calcLong;
     private final BigDecimal amlDay;
-    private final BigDecimal aml90;
-    private final BigDecimal amlLong;
+    private final BigDecimal amlQ1;
+    private final BigDecimal amlQ2;
+    private final BigDecimal amlQ3;
+    private final BigDecimal amlQ4;
 
     private final ICoinHubAPI api;
     private final String apiKey;
@@ -55,12 +54,11 @@ public class CoinHubSecurityListener implements ITransactionListener {
         this.api = RestProxyFactory.createProxy(ICoinHubAPI.class, apiEndpoint);
         this.maxPerTx = config(ctx, "sec22_max_per_tx", new BigDecimal("100000"));
         this.max3Hours = config(ctx, "sec22_max_3_hours", new BigDecimal("100000"));
-        this.calcDay = config(ctx, "sec22_calc_day", new BigDecimal("800000"));
-        this.calcWeek = config(ctx, "sec22_calc_week", new BigDecimal("1600000"));
-        this.calcLong = config(ctx, "sec22_calc_long", new BigDecimal("3000000"));
         this.amlDay = config(ctx, "sec22_aml_day", new BigDecimal("800000"));
-        this.aml90 = config(ctx, "sec22_aml_90", new BigDecimal("1500000"));
-        this.amlLong = config(ctx, "sec22_aml_long", new BigDecimal("5600000"));
+        this.amlQ1 = config(ctx, "sec22_aml_q1", new BigDecimal("1500000"));
+        this.amlQ2 = config(ctx, "sec22_aml_q2", new BigDecimal("3000000"));
+        this.amlQ3 = config(ctx, "sec22_aml_q3", new BigDecimal("4500000"));
+        this.amlQ4 = config(ctx, "sec22_aml_q4", new BigDecimal("6000000"));
         this.ctx = ctx;
     }
 
@@ -136,11 +134,6 @@ public class CoinHubSecurityListener implements ITransactionListener {
             prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
             return false;
         }
-        // if (exceedCalculation(ledger, BigDecimal.ZERO)) {
-        //     log.warn("[Security] DENY prep identity={} ledger over rolling limits", identityId);
-        //     prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
-        //     return false;
-        // }
         return true;
     }
 
@@ -188,21 +181,18 @@ public class CoinHubSecurityListener implements ITransactionListener {
                 rid, identityId, past3h, amount, max3Hours);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
         }
-        boolean calcFail = exceedCalculation(ledger, amount);
-        boolean amlFail = exceedsAml(ledger, amount);
-        if (calcFail || amlFail) {
+        if (exceedsAml(ledger, amount)) {
             BigDecimal d1 = sumInWindow(ledger, 1);
-            BigDecimal d7 = sumInWindow(ledger, 7);
-            BigDecimal d30 = sumInWindow(ledger, 30);
             BigDecimal d90 = sumInWindow(ledger, 90);
             BigDecimal d180 = sumInWindow(ledger, 180);
+            BigDecimal d270 = sumInWindow(ledger, 270);
             BigDecimal d365 = sumInWindow(ledger, 365);
-            log.warn("[Security] approve DENY rid={} identity={} reason=00010 calcFail={} amlFail={} "
-                    + "current={} d1={} d7={} d30={} d90={} d180={} d365={} "
-                    + "limits calcDay={} calcWeek={} calcLong={} amlDay={} aml90={} amlLong={}",
-                rid, identityId, calcFail, amlFail,
-                amount, d1, d7, d30, d90, d180, d365,
-                calcDay, calcWeek, calcLong, amlDay, aml90, amlLong);
+            log.warn("[Security] approve DENY rid={} identity={} reason=00010 "
+                    + "current={} d1={} d90={} d180={} d270={} d365={} "
+                    + "limits amlDay={} amlQ1={} amlQ2={} amlQ3={} amlQ4={}",
+                rid, identityId,
+                amount, d1, d90, d180, d270, d365,
+                amlDay, amlQ1, amlQ2, amlQ3, amlQ4);
             return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
         }
         log.info("[Security] approve ALLOW rid={} identity={} amount={}", rid, identityId, amount);
@@ -489,22 +479,12 @@ public class CoinHubSecurityListener implements ITransactionListener {
         return past.add(current).compareTo(max3Hours) > 0;
     }
 
-    private boolean exceedCalculation(List<LedgerEntry> ledger, BigDecimal current) {
-        return sumInWindow(ledger, 1).add(current).compareTo(calcDay) > 0
-            || sumInWindow(ledger, 7).add(current).compareTo(calcWeek) > 0
-            || sumInWindow(ledger, 90).add(current).compareTo(calcLong) > 0
-            || sumInWindow(ledger, 180).add(current).compareTo(calcLong) > 0
-            || sumInWindow(ledger, 365).add(current).compareTo(calcLong) > 0;
-    }
-
     private boolean exceedsAml(List<LedgerEntry> ledger, BigDecimal current) {
-        boolean dayFail = sumInWindow(ledger, 1).add(current).compareTo(amlDay) > 0;
-        boolean days90Fail = sumInWindow(ledger, 90).add(current).compareTo(aml90) > 0;
-        boolean longFail = sumInWindow(ledger, 7).add(current).compareTo(amlLong) > 0
-            || sumInWindow(ledger, 30).add(current).compareTo(amlLong) > 0
-            || sumInWindow(ledger, 180).add(current).compareTo(amlLong) > 0
-            || sumInWindow(ledger, 365).add(current).compareTo(amlLong) > 0;
-        return dayFail || days90Fail || longFail;
+        return sumInWindow(ledger, 1).add(current).compareTo(amlDay) > 0
+            || sumInWindow(ledger, 90).add(current).compareTo(amlQ1) > 0
+            || sumInWindow(ledger, 180).add(current).compareTo(amlQ2) > 0
+            || sumInWindow(ledger, 270).add(current).compareTo(amlQ3) > 0
+            || sumInWindow(ledger, 365).add(current).compareTo(amlQ4) > 0;
     }
 
     private BigDecimal sumInHours(List<LedgerEntry> ledger, int hours) {
