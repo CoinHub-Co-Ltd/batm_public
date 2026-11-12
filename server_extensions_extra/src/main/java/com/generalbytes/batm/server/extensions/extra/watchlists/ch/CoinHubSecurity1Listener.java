@@ -104,7 +104,7 @@ public class CoinHubSecurity1Listener implements ITransactionListener {
                     if (match.getDetails() != null && !match.getDetails().trim().isEmpty()) {
                         return CoinHubAtmErrors.localize(ctx, match.getDetails(), language);
                     }
-                    return CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S1_DENIED, language);
+                    return CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S1_BLACKLISTED, language);
                 }
             }
             log.info("[Security1] matches below threshold identity={}", identityId);
