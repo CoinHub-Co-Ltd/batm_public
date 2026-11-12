@@ -13,4 +13,5 @@ public class CreateCustomerRequest {
     public String purpose;
     public String email;
     public String phone;
+    public String fingerprint;
 }

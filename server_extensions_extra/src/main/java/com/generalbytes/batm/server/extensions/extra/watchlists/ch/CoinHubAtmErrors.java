@@ -24,6 +24,11 @@ public final class CoinHubAtmErrors {
     public static final String CODE_S1_UNAVAILABLE = "00003";
     public static final String CODE_S1_CHECK_FAILED = "00004";
 
+    // Security 1.2 — fingerprint must match first name, last name, and date of birth
+    public static final String CODE_S12_IDENTITY_REQUIRED = "00017";
+    public static final String CODE_S12_IDENTITY_MISMATCH = "00018";
+    public static final String CODE_S12_UNAVAILABLE = "00019";
+
     // Security 2 — fingerprint / limits
     public static final String CODE_S2_MISSING_ADDRESS = "00005";
     public static final String CODE_S2_FINGERPRINT_DENIED = "00006";
@@ -37,17 +42,20 @@ public final class CoinHubAtmErrors {
 
     static {
         Map<String, String> defaults = new HashMap<>();
-        defaults.put(CODE_S1_DENIED, "Transaction denied.");
-        defaults.put(CODE_S1_BLACKLISTED, "Black Listed. Please contact support.");
-        defaults.put(CODE_S1_UNAVAILABLE, "CoinHub watchlist unavailable (empty response)");
-        defaults.put(CODE_S1_CHECK_FAILED, "Transaction denied.");
-        defaults.put(CODE_S2_MISSING_ADDRESS, "Crypto currency or destination address is missing.");
-        defaults.put(CODE_S2_FINGERPRINT_DENIED, "Transaction denied.");
-        defaults.put(CODE_S2_FINGERPRINT_UNAVAILABLE, "Transaction limit check unavailable. Please try again later.");
-        defaults.put(CODE_S2_LEDGER_UNAVAILABLE, "Transaction limit check unavailable. Please try again later.");
-        defaults.put(CODE_S2_LIMIT_TRY_LATER, "Transaction limit exceeded. Please try again later.");
-        defaults.put(CODE_S2_LIMIT_EXCEEDED, "Transaction limit exceeded.");
-        defaults.put(CODE_S2_MAX_PER_TX, "Maximum {0} JPY per transaction exceeded.");
+        defaults.put(CODE_S1_DENIED, "This identity is prohibited and cannot make a transaction.");
+        defaults.put(CODE_S1_BLACKLISTED, "This name is on the blocklist. Please contact support.");
+        defaults.put(CODE_S1_UNAVAILABLE, "The blocklist check could not be completed. Please try again later.");
+        defaults.put(CODE_S1_CHECK_FAILED, "The blocklist check failed. Please try again later.");
+        defaults.put(CODE_S12_IDENTITY_REQUIRED, "A first name, last name, and date of birth are required to verify this fingerprint.");
+        defaults.put(CODE_S12_IDENTITY_MISMATCH, "This fingerprint is already registered to a different name.");
+        defaults.put(CODE_S12_UNAVAILABLE, "The fingerprint identity check could not be completed. Please try again later.");
+        defaults.put(CODE_S2_MISSING_ADDRESS, "The coin or destination wallet address is missing.");
+        defaults.put(CODE_S2_FINGERPRINT_DENIED, "This wallet address is already registered to a different fingerprint.");
+        defaults.put(CODE_S2_FINGERPRINT_UNAVAILABLE, "The wallet fingerprint check could not be completed. Please try again later.");
+        defaults.put(CODE_S2_LEDGER_UNAVAILABLE, "The purchase history could not be loaded. Please try again later.");
+        defaults.put(CODE_S2_LIMIT_TRY_LATER, "The 3-hour limit of {0} JPY has been reached. Please try again later.");
+        defaults.put(CODE_S2_LIMIT_EXCEEDED, "The {0} purchase limit of {1} JPY has been reached.");
+        defaults.put(CODE_S2_MAX_PER_TX, "This purchase of more than {0} JPY is above the single-transaction limit.");
         DEFAULT_EN = Collections.unmodifiableMap(defaults);
     }
 

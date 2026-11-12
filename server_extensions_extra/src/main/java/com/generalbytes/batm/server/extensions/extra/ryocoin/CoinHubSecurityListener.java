@@ -10,13 +10,17 @@ import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.ICoinHubAPI
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateCustomerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.CreateLedgerRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintCheckRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintIdentityCheckRequest;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.request.FingerprintLookupRequest;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.CreateCustomerResponse;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.CustomerIdentityResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.FingerprintCheckResponse;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerEntry;
 import com.generalbytes.batm.server.extensions.extra.ryocoin.sources.dto.response.LedgerResponse;
 import com.generalbytes.batm.server.extensions.extra.watchlists.ch.CoinHubAtmErrors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import si.mazi.rescu.HttpStatusIOException;
 import si.mazi.rescu.RestProxyFactory;
 
 import java.math.BigDecimal;
@@ -91,26 +95,44 @@ public class CoinHubSecurityListener implements ITransactionListener {
 
         String identityId = prep.getIdentityPublicId();
         if (identityId != null && api != null && apiKey != null) {
-            String fingerprint = null;
-            IIdentity identity = ctx.findIdentityByIdentityId(identityId);
-            if (identity != null && identity.getIdentityPieces() != null) {
-                for (IIdentityPiece piece : identity.getIdentityPieces()) {
-                    if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT && piece.getData() != null) {
-                        fingerprint = Base64.getEncoder().encodeToString(piece.getData());
-                        break;
+            FingerprintIdentityCheckRequest current = fingerprintIdentityFor(identityId, address);
+            if (current != null) {
+                if (isBlank(current.firstName) || isBlank(current.lastName) || isBlank(current.birthOfDate)) {
+                    log.warn("[Security] DENY prep identity={} security 1.2 missing name or dob", identityId);
+                    prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S12_IDENTITY_REQUIRED, language));
+                    return false;
+                }
+                try {
+                    CustomerIdentityResponse stored = api.findCustomerByFingerprint(
+                        apiKey, new FingerprintLookupRequest(current.fingerprint));
+                    if (hasStoredIdentity(stored) && !sameIdentity(stored, current)) {
+                        log.warn("[Security] DENY prep identity={} address={} security 1.2 fingerprint stored as firstName={} lastName={} dob={} current firstName={} lastName={} dob={}",
+                            identityId, address,
+                            stored.data.firstName, stored.data.lastName, stored.data.birthOfDate,
+                            current.firstName, current.lastName, current.birthOfDate);
+                        prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S12_IDENTITY_MISMATCH, language));
+                        return false;
+                    }
+                } catch (Exception e) {
+                    HttpStatusIOException http = httpStatus(e);
+                    if (http != null && http.getHttpStatusCode() == 404) {
+                        log.info("[Security] prep identity={} fingerprint not in operation database", identityId);
+                    } else {
+                        log.error("[Security] fingerprint lookup failed identity={}", identityId, e);
+                        prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S12_UNAVAILABLE, language));
+                        return false;
                     }
                 }
-            }
-            if (fingerprint != null) {
                 try {
-                    FingerprintCheckResponse check = api.checkFingerprint(apiKey, new FingerprintCheckRequest(address, fingerprint));
-                    if (check != null && Boolean.FALSE.equals(check.allowed)) {
-                        log.warn("[Security] DENY prep identity={} address={} fingerprint conflict", identityId, address);
+                    FingerprintCheckResponse walletCheck = api.checkFingerprint(
+                        apiKey, new FingerprintCheckRequest(address, current.fingerprint));
+                    if (walletCheck != null && Boolean.FALSE.equals(walletCheck.allowed)) {
+                        log.warn("[Security] DENY prep identity={} address={} wallet belongs to another fingerprint", identityId, address);
                         prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_FINGERPRINT_DENIED, language));
                         return false;
                     }
                 } catch (Exception e) {
-                    log.error("[Security] fingerprint check failed identity={}", identityId, e);
+                    log.error("[Security] wallet fingerprint check failed identity={}", identityId, e);
                     prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_FINGERPRINT_UNAVAILABLE, language));
                     return false;
                 }
@@ -131,7 +153,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         if (exceedThreeHours(ledger, BigDecimal.ZERO)) {
             log.warn("[Security] DENY prep identity={} ledger >= {} within 3 hours", identityId, max3Hours);
-            prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
+            prep.setErrorMessage(CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language, max3Hours.toPlainString()));
             return false;
         }
         return true;
@@ -179,21 +201,23 @@ public class CoinHubSecurityListener implements ITransactionListener {
         if (exceedThreeHours(ledger, amount)) {
             log.warn("[Security] approve DENY rid={} identity={} reason=00009 past3h={} current={} max3Hours={}",
                 rid, identityId, past3h, amount, max3Hours);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language));
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language, max3Hours.toPlainString()));
         }
-        if (exceedsAml(ledger, amount)) {
+        String limitFailure = exceededPurchaseLimit(ledger, amount);
+        if (limitFailure != null) {
             BigDecimal d1 = sumInWindow(ledger, 1);
             BigDecimal d90 = sumInWindow(ledger, 90);
             BigDecimal d180 = sumInWindow(ledger, 180);
             BigDecimal d270 = sumInWindow(ledger, 270);
             BigDecimal d365 = sumInWindow(ledger, 365);
-            log.warn("[Security] approve DENY rid={} identity={} reason=00010 "
+            log.warn("[Security] approve DENY rid={} identity={} reason=00010 limit={} "
                     + "current={} d1={} d90={} d180={} d270={} d365={} "
                     + "limits amlDay={} amlQ1={} amlQ2={} amlQ3={} amlQ4={}",
-                rid, identityId,
+                rid, identityId, limitFailure,
                 amount, d1, d90, d180, d270, d365,
                 amlDay, amlQ1, amlQ2, amlQ3, amlQ4);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language));
+            String[] parts = limitFailure.split("\\|", 2);
+            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language, parts[0], parts[1]));
         }
         log.info("[Security] approve ALLOW rid={} identity={} amount={}", rid, identityId, amount);
         return true;
@@ -320,6 +344,9 @@ public class CoinHubSecurityListener implements ITransactionListener {
 
         CreateCustomerRequest request = new CreateCustomerRequest();
         for (IIdentityPiece piece : identity.getIdentityPieces()) {
+            if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT && piece.getData() != null && isBlank(request.fingerprint)) {
+                request.fingerprint = Base64.getEncoder().encodeToString(piece.getData());
+            }
             if (piece.getPieceType() == IIdentityPiece.TYPE_EMAIL && piece.getEmailAddress() != null) {
                 request.email = piece.getEmailAddress();
             }
@@ -434,6 +461,68 @@ public class CoinHubSecurityListener implements ITransactionListener {
         return value == null || value.trim().isEmpty();
     }
 
+    private FingerprintIdentityCheckRequest fingerprintIdentityFor(String identityId, String address) {
+        IIdentity identity = ctx.findIdentityByIdentityId(identityId);
+        if (identity == null || identity.getIdentityPieces() == null) {
+            return null;
+        }
+        String fingerprint = null;
+        String firstName = null;
+        String lastName = null;
+        String birthOfDate = null;
+        for (IIdentityPiece piece : identity.getIdentityPieces()) {
+            if (piece.getPieceType() == IIdentityPiece.TYPE_FINGERPRINT && piece.getData() != null) {
+                fingerprint = Base64.getEncoder().encodeToString(piece.getData());
+            } else if (piece.getPieceType() == IIdentityPiece.TYPE_PERSONAL_INFORMATION) {
+                if (isBlank(firstName) && !isBlank(piece.getFirstname())) {
+                    firstName = piece.getFirstname().trim();
+                }
+                if (isBlank(lastName) && !isBlank(piece.getLastname())) {
+                    lastName = piece.getLastname().trim();
+                }
+                if (isBlank(birthOfDate) && piece.getDateOfBirth() != null) {
+                    birthOfDate = formatDob(piece.getDateOfBirth());
+                }
+            }
+        }
+        if (fingerprint == null) {
+            return null;
+        }
+        return new FingerprintIdentityCheckRequest(identityId, address, fingerprint, firstName, lastName, birthOfDate);
+    }
+
+    private static HttpStatusIOException httpStatus(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof HttpStatusIOException) {
+                return (HttpStatusIOException) current;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private static boolean hasStoredIdentity(CustomerIdentityResponse stored) {
+        return stored != null && stored.data != null
+            && (!isBlank(stored.data.firstName) || !isBlank(stored.data.lastName) || !isBlank(stored.data.birthOfDate));
+    }
+
+    private static boolean sameIdentity(CustomerIdentityResponse stored, FingerprintIdentityCheckRequest current) {
+        return sameValue(stored.data.firstName, current.firstName)
+            && sameValue(stored.data.lastName, current.lastName)
+            && sameValue(stored.data.birthOfDate, current.birthOfDate);
+    }
+
+    private static boolean sameValue(String stored, String current) {
+        if (isBlank(stored) || isBlank(current)) {
+            return false;
+        }
+        return stored.trim().equalsIgnoreCase(current.trim());
+    }
+
     private List<LedgerEntry> getLedger(String identityId) {
         try {
             if (api == null || apiKey == null || identityId == null) {
@@ -479,12 +568,23 @@ public class CoinHubSecurityListener implements ITransactionListener {
         return past.add(current).compareTo(max3Hours) > 0;
     }
 
-    private boolean exceedsAml(List<LedgerEntry> ledger, BigDecimal current) {
-        return sumInWindow(ledger, 1).add(current).compareTo(amlDay) > 0
-            || sumInWindow(ledger, 90).add(current).compareTo(amlQ1) > 0
-            || sumInWindow(ledger, 180).add(current).compareTo(amlQ2) > 0
-            || sumInWindow(ledger, 270).add(current).compareTo(amlQ3) > 0
-            || sumInWindow(ledger, 365).add(current).compareTo(amlQ4) > 0;
+    private String exceededPurchaseLimit(List<LedgerEntry> ledger, BigDecimal current) {
+        if (sumInWindow(ledger, 1).add(current).compareTo(amlDay) > 0) {
+            return "1-day|" + amlDay.toPlainString();
+        }
+        if (sumInWindow(ledger, 90).add(current).compareTo(amlQ1) > 0) {
+            return "90-day|" + amlQ1.toPlainString();
+        }
+        if (sumInWindow(ledger, 180).add(current).compareTo(amlQ2) > 0) {
+            return "180-day|" + amlQ2.toPlainString();
+        }
+        if (sumInWindow(ledger, 270).add(current).compareTo(amlQ3) > 0) {
+            return "270-day|" + amlQ3.toPlainString();
+        }
+        if (sumInWindow(ledger, 365).add(current).compareTo(amlQ4) > 0) {
+            return "365-day|" + amlQ4.toPlainString();
+        }
+        return null;
     }
 
     private BigDecimal sumInHours(List<LedgerEntry> ledger, int hours) {
