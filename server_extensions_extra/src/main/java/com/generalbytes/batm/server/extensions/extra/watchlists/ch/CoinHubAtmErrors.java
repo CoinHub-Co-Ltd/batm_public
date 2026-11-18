@@ -54,7 +54,7 @@ public final class CoinHubAtmErrors {
         defaults.put(CODE_S2_FINGERPRINT_UNAVAILABLE, "The wallet fingerprint check could not be completed. Please try again later.");
         defaults.put(CODE_S2_LEDGER_UNAVAILABLE, "The purchase history could not be loaded. Please try again later.");
         defaults.put(CODE_S2_LIMIT_TRY_LATER, "The 3-hour limit of {0} JPY has been reached. Please try again later.");
-        defaults.put(CODE_S2_LIMIT_EXCEEDED, "The {0} purchase limit of {1} JPY has been reached.");
+        defaults.put(CODE_S2_LIMIT_EXCEEDED, "The purchase limit of JPY {0} has been reached.");
         defaults.put(CODE_S2_MAX_PER_TX, "This purchase of more than {0} JPY is above the single-transaction limit.");
         DEFAULT_EN = Collections.unmodifiableMap(defaults);
     }

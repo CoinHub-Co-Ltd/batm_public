@@ -50,6 +50,7 @@ public class CoinHubSecurityListener implements ITransactionListener {
     private final ICoinHubAPI api;
     private final String apiKey;
     private final IExtensionContext ctx;
+    private final CoinHubAmlSlackNotifier amlSlack;
     /** Language from prep (ITransactionRequest has no getLanguage). Keyed by identity or terminal. */
     private final Map<String, String> languageByKey = new ConcurrentHashMap<>();
 
@@ -64,6 +65,17 @@ public class CoinHubSecurityListener implements ITransactionListener {
         this.amlQ3 = config(ctx, "sec22_aml_q3", new BigDecimal("4500000"));
         this.amlQ4 = config(ctx, "sec22_aml_q4", new BigDecimal("6000000"));
         this.ctx = ctx;
+        this.amlSlack = new CoinHubAmlSlackNotifier(textConfig(ctx, "slack_webhook_url"));
+    }
+
+    private static String textConfig(IExtensionContext ctx, String key) {
+        try {
+            String value = ctx.getConfigProperty("coinhub", key, "");
+            return value == null ? "" : value.trim();
+        } catch (Exception e) {
+            log.warn("[Security] Could not read config {}", key, e);
+            return "";
+        }
     }
 
     private BigDecimal config(IExtensionContext ctx, String key, BigDecimal defaultValue) {
@@ -180,28 +192,28 @@ public class CoinHubSecurityListener implements ITransactionListener {
         }
         if (amount.compareTo(maxPerTx) > 0) {
             log.warn("[Security] approve DENY rid={} reason=00016 amount={} maxPerTx={}", rid, amount, maxPerTx);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_MAX_PER_TX, language, maxPerTx.toPlainString()));
+            return reject(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_MAX_PER_TX, language, maxPerTx.toPlainString()), BigDecimal.ZERO);
         }
         String identityId = request.getIdentityPublicId();
         if (identityId == null) {
             log.info("[Security] approve ALLOW rid={} (no identity)", rid);
-            return true;
+            return pass(request, BigDecimal.ZERO);
         }
         List<LedgerEntry> ledger = getLedger(identityId);
         if (ledger == null) {
             log.warn("[Security] approve DENY rid={} identity={} reason=00008 ledger unavailable", rid, identityId);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LEDGER_UNAVAILABLE, language));
+            return reject(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LEDGER_UNAVAILABLE, language), null);
         }
         log.info("[Security] approve ledger rid={} identity={} entries={}", rid, identityId, ledger.size());
+        BigDecimal past3h = sumInHours(ledger, 3);
         if (noBuyInLastYear(ledger)) {
             log.info("[Security] approve ALLOW rid={} identity={} (no buy in last year)", rid, identityId);
-            return true;
+            return pass(request, past3h);
         }
-        BigDecimal past3h = sumInHours(ledger, 3);
         if (exceedThreeHours(ledger, amount)) {
             log.warn("[Security] approve DENY rid={} identity={} reason=00009 past3h={} current={} max3Hours={}",
                 rid, identityId, past3h, amount, max3Hours);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language, max3Hours.toPlainString()));
+            return reject(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_TRY_LATER, language, max3Hours.toPlainString()), past3h);
         }
         String limitFailure = exceededPurchaseLimit(ledger, amount);
         if (limitFailure != null) {
@@ -217,10 +229,70 @@ public class CoinHubSecurityListener implements ITransactionListener {
                 amount, d1, d90, d180, d270, d365,
                 amlDay, amlQ1, amlQ2, amlQ3, amlQ4);
             String[] parts = limitFailure.split("\\|", 2);
-            return deny(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language, parts[0], parts[1]));
+            return reject(request, CoinHubAtmErrors.msg(ctx, CoinHubAtmErrors.CODE_S2_LIMIT_EXCEEDED, language, parts[1]), past3h);
         }
         log.info("[Security] approve ALLOW rid={} identity={} amount={}", rid, identityId, amount);
+        return pass(request, past3h);
+    }
+
+    private boolean pass(ITransactionRequest request, BigDecimal past3h) {
+        notifyAml(request, true, "", "", past3h);
         return true;
+    }
+
+    private boolean reject(ITransactionRequest request, String wrappedMessage, BigDecimal past3h) {
+        String code = CoinHubAtmErrors.extractCode(wrappedMessage);
+        notifyAml(request, false, code == null ? "" : code, customerMessage(wrappedMessage), past3h);
+        return deny(request, wrappedMessage);
+    }
+
+    private void notifyAml(ITransactionRequest request, boolean passed, String atmCode, String atmMessage, BigDecimal past3h) {
+        try {
+            String receipt = request.getRemoteTransactionId();
+            if (receipt == null || receipt.trim().isEmpty()) {
+                receipt = request.getLocalTransactionId();
+            }
+            BigDecimal inserted = request.getCashAmount();
+            amlSlack.notify(
+                receipt,
+                inserted,
+                allowedAmountIn3Hours(passed, inserted, past3h),
+                request.getCryptoCurrency(),
+                "buy",
+                passed,
+                atmCode,
+                atmMessage);
+        } catch (Exception e) {
+            log.warn("[Security] AML Slack notify failed rid={}", request.getRemoteTransactionId(), e);
+        }
+    }
+
+    /**
+     * Passed: room left in the 3-hour window after this purchase.
+     * Rejected: the configured 3-hour cap.
+     */
+    private BigDecimal allowedAmountIn3Hours(boolean passed, BigDecimal inserted, BigDecimal past3h) {
+        if (!passed) {
+            return max3Hours;
+        }
+        BigDecimal past = past3h == null ? BigDecimal.ZERO : past3h;
+        BigDecimal current = inserted == null ? BigDecimal.ZERO : inserted;
+        BigDecimal remaining = max3Hours.subtract(past).subtract(current);
+        return remaining.signum() < 0 ? BigDecimal.ZERO : remaining;
+    }
+
+    private static String customerMessage(String wrapped) {
+        if (wrapped == null) {
+            return "";
+        }
+        String trimmed = wrapped.trim();
+        if (trimmed.startsWith("[")) {
+            int end = trimmed.indexOf(']');
+            if (end > 1 && end + 1 < trimmed.length()) {
+                return trimmed.substring(end + 1).trim();
+            }
+        }
+        return trimmed;
     }
 
     private String rememberLanguage(String identityId, String terminalSerial, String language) {

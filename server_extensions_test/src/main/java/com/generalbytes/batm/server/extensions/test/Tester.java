@@ -19,6 +19,7 @@
 package com.generalbytes.batm.server.extensions.test;
 
 import com.generalbytes.batm.server.extensions.*;
+import com.generalbytes.batm.server.extensions.extra.ryocoin.CoinHubAmlSlackNotifier;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import org.w3c.dom.Document;
@@ -99,6 +100,12 @@ public class Tester {
         System.out.println("     Places an order using IExchangeAdvanced task flow (hits \"task createOrder\").");
         System.out.println("     Uses hardcoded payload: crypto=BTC fiat=USDT amount=1 (instrument_id becomes BTC-USDT).");
         System.out.println();
+        System.out.println("  AML SLACK (does not require -j):");
+        System.out.println("   aml-slack");
+        System.out.println("     Prints a sample AML pass or reject Slack message.");
+        System.out.println("     -p=passed or -p=rejected (default passed).");
+        System.out.println("     -n=<slack webhook url> sends it. SLACK_WEBHOOK_URL is used when -n is omitted.");
+        System.out.println();
 
     }
 
@@ -110,6 +117,11 @@ public class Tester {
         if (args.length ==0) {
             usage();
             System.exit(1);
+        }
+
+        if (options.has("a") && "aml-slack".equalsIgnoreCase((String) options.valueOf("a"))) {
+            amlSlack(options);
+            System.exit(0);
         }
 
         if (!options.has("j")) {
@@ -446,6 +458,54 @@ public class Tester {
 
 
 
+
+    private void amlSlack(OptionSet options) {
+        String status = options.has("p") ? String.valueOf(options.valueOf("p")) : "passed";
+        boolean passed;
+        if ("passed".equalsIgnoreCase(status)) {
+            passed = true;
+        } else if ("rejected".equalsIgnoreCase(status)) {
+            passed = false;
+        } else {
+            System.err.println("Error: -p must be passed or rejected.");
+            System.exit(1);
+            return;
+        }
+
+        String webhook = null;
+        if (options.has("n") && options.valueOf("n") != null) {
+            webhook = String.valueOf(options.valueOf("n")).trim();
+        }
+        if (webhook == null || webhook.isEmpty()) {
+            String env = System.getenv("SLACK_WEBHOOK_URL");
+            if (env != null && !env.trim().isEmpty()) {
+                webhook = env.trim();
+            }
+        }
+
+        try {
+            String payload = CoinHubAmlSlackNotifier.samplePayload(passed);
+            System.out.println(CoinHubAmlSlackNotifier.sampleMessage(passed));
+            if (webhook == null || webhook.isEmpty()) {
+                System.out.println();
+                System.out.println("Dry run only. Pass -n=<slack webhook url> or set SLACK_WEBHOOK_URL to send.");
+                return;
+            }
+            CoinHubAmlSlackNotifier.SendResult result = CoinHubAmlSlackNotifier.postPayload(webhook, payload);
+            System.out.println();
+            System.out.println("Slack HTTP " + result.status);
+            if (!result.body.isEmpty()) {
+                System.out.println(result.body);
+            }
+            if (result.status < 200 || result.status >= 300) {
+                System.exit(1);
+            }
+        } catch (Exception e) {
+            System.err.println("AML Slack test failed: " + e.getMessage());
+            e.printStackTrace(System.err);
+            System.exit(1);
+        }
+    }
 
     private void getRates(String name, String params) {
         for (int i = 0; i < extensions.size(); i++) {

@@ -1,38 +1,44 @@
-# CoinHub ATM deny messages — copy to /batm/config/coinhub_errors
-# Keys: <code>.<lang>  (en | ja)
-# Placeholders use MessageFormat: {0}, {1}, ...
-
 # Security 1
-00001.en=Transaction denied.
-00001.ja=取引が拒否されました。
+00001.en=This identity is restricted and cannot make transactions.
+00001.ja=この本人情報は取引が制限されているため、お取引いただけません。
 
-00002.en=Black Listed. Please contact support.
-00002.ja=ブラックリストに登録されています。サポートにお問い合わせください。
+00002.en=This name is on the blocklist. Please contact support.
+00002.ja=この氏名はブロックリストに登録されています。サポートまでお問い合わせください。
 
-00003.en=CoinHub watchlist unavailable (empty response)
-00003.ja=ウォッチリストを確認できませんでした。後でもう一度お試しください。
+00003.en=The blocklist check could not be completed. Please try again later.
+00003.ja=ブロックリストの確認を完了できませんでした。しばらくしてから再度お試しください。
 
-00004.en=Transaction denied.
-00004.ja=取引が拒否されました。
+00004.en=The blocklist check failed. Please try again later.
+00004.ja=ブロックリストの確認に失敗しました。しばらくしてから再度お試しください。
 
 # Security 2
-00005.en=Crypto currency or destination address is missing.
-00005.ja=暗号通貨または送金先アドレスがありません。
+00005.en=The coin or destination wallet address is missing.
+00005.ja=暗号資産または送金先ウォレットアドレスが指定されていません。
 
-00006.en=Transaction denied.
-00006.ja=取引が拒否されました。
+00006.en=This wallet address is already registered to a different fingerprint.
+00006.ja=このウォレットアドレスは、すでに別のフィンガープリントで登録されています。
 
-00007.en=Transaction limit check unavailable. Please try again later.
-00007.ja=取引限度額の確認ができませんでした。後でもう一度お試しください。
+00007.en=The wallet fingerprint check could not be completed. Please try again later.
+00007.ja=ウォレットのフィンガープリント確認を完了できませんでした。しばらくしてから再度お試しください。
 
-00008.en=Transaction limit check unavailable. Please try again later.
-00008.ja=取引限度額の確認ができませんでした。後でもう一度お試しください。
+00008.en=The purchase history could not be loaded. Please try again later.
+00008.ja=購入履歴を読み込めませんでした。しばらくしてから再度お試しください。
 
-00009.en=Transaction limit exceeded. Please try again later.
-00009.ja=取引限度額を超えました。後でもう一度お試しください。
+00009.en=You have reached the purchase limit of JPY {0}. Please try again later.
+00009.ja=ご利用上限額（{0}円）に達しました。しばらくしてから再度お試しください。
 
-00010.en=Transaction limit exceeded.
-00010.ja=取引限度額を超えました。
+00010.en=You have reached the purchase limit of JPY {0}.
+00010.ja=ご利用上限額（{0}円）に達しました。
 
-00016.en=Maximum {0} JPY per transaction exceeded.
-00016.ja=1回の取引上限 {0} 円を超えました。
+00016.en=This purchase exceeds the single-transaction limit of JPY {0}.
+00016.ja=この購入金額は、1回あたりのご利用上限額（{0}円）を超えています。
+
+# Security 1.2
+00017.en=Name and Date of Birth are required to verify this fingerprint.
+00017.ja=このフィンガープリントを確認するには、氏名と生年月日の入力が必要です。
+
+00018.en=This fingerprint is already registered to a different name.
+00018.ja=このフィンガープリントは、すでに別の氏名で登録されています。
+
+00019.en=The fingerprint identity check could not be completed. Please try again later.
+00019.ja=フィンガープリントによる本人確認を完了できませんでした。しばらくしてから再度お試しください。
